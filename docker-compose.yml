@@ -1,0 +1,49 @@
+# Heretic LLM Abliteration Pipeline
+#
+# Phase 1 - Interactive abliteration:
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm heretic heretic google/gemma-3-12b-it
+#   (select trial, save to /output/hf-model)
+#
+# Phase 2 - Convert to all formats:
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm heretic /scripts/convert_all.sh /output/hf-model
+#
+# Or use the 'convert' service shortcut:
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm convert
+
+services:
+  heretic:
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID:-0}"]
+              capabilities: [gpu]
+    environment:
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
+      - HF_TOKEN=${HF_TOKEN}
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./output:/output
+      - ./models:/models
+    stdin_open: true
+    tty: true
+
+  convert:
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID:-0}"]
+              capabilities: [gpu]
+    environment:
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
+    volumes:
+      - ./output:/output
+      - ./models:/models
+    command: /scripts/convert_all.sh /output/hf-model

@@ -13,13 +13,7 @@
 services:
   heretic:
     build: .
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${GPU_ID:-0}"]
-              capabilities: [gpu]
+    runtime: nvidia
     environment:
       - HOST_UID=${HOST_UID:-1000}
       - HOST_GID=${HOST_GID:-1000}
@@ -33,13 +27,6 @@ services:
 
   convert:
     build: .
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${GPU_ID:-0}"]
-              capabilities: [gpu]
     environment:
       - HOST_UID=${HOST_UID:-1000}
       - HOST_GID=${HOST_GID:-1000}
@@ -47,3 +34,25 @@ services:
       - ./output:/output
       - ./models:/models
     command: /scripts/convert_all.sh /output/hf-model
+
+  axolotl:
+    build:
+      context: .
+      dockerfile: Dockerfile.axolotl
+    entrypoint: []
+    runtime: nvidia
+    environment:
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/models/huggingface
+      - CUDA_VISIBLE_DEVICES=1
+      - DATA_PATH=${DATA_PATH}
+      - BASE_MODEL=${BASE_MODEL:-/output/hf-model}
+    volumes:
+      - ./output:/output
+      - ./models:/models
+      - ./configs:/configs
+      - ./data:/data
+    stdin_open: true
+    tty: true

@@ -1,0 +1,12 @@
+FROM winglian/axolotl-cloud:latest
+
+# Install axolotl from source for Qwen3.5 support (PR #3442)
+# Let pip resolve all deps properly, then fix torchvision to match torch
+RUN --mount=type=cache,target=/root/.cache/pip \
+    cd /workspace/axolotl && \
+    git pull origin main && \
+    /root/miniconda3/envs/py3.11/bin/pip install -e ".[flash-attn]" && \
+    /root/miniconda3/envs/py3.11/bin/pip install --upgrade torchvision --index-url https://download.pytorch.org/whl/cu128 && \
+    /root/miniconda3/envs/py3.11/bin/pip uninstall -y causal-conv1d && \
+    /root/miniconda3/envs/py3.11/bin/pip install flash-linear-attention==0.4.1 && \
+    /root/miniconda3/envs/py3.11/bin/pip install --force-reinstall --no-build-isolation causal-conv1d

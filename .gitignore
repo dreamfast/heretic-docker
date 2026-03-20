@@ -2,3 +2,11 @@
 output/
 models/
 MODEL_CARD.md
+checkpoints/
+configs/*
+!configs/.gitkeep
+data/*
+!data/.gitkeep
+*.gguf
+*.safetensors
+REPORT.md

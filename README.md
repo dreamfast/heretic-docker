@@ -1,35 +1,33 @@
 # heretic-docker
 
-Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration on NVIDIA Blackwell GPUs (RTX 5090, RTX 5080, etc).
+Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration and fine-tuning on NVIDIA GPUs.
 
-Produces ComfyUI-compatible text encoder formats (with vision preserved), FP8/NVFP4 quantized variants, and GGUF quants for llama.cpp.
+Produces ComfyUI-compatible text encoder formats (with vision preserved), FP8/NVFP4 quantized variants, and GGUF quants for llama.cpp. Includes [Axolotl](https://github.com/axolotl-ai-cloud/axolotl) for SFT fine-tuning.
 
 ## What it does
 
-1. **Abliterate** any HuggingFace model using Heretic v1.2.0 (interactive, you pick the trial)
-2. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
-3. **Quantize** to FP8 (float8_e4m3fn), NVFP4 (ComfyUI-native, Blackwell-optimized)
-4. **GGUF** conversion with multiple quantization levels via llama.cpp
+1. **Abliterate** any HuggingFace model using Heretic (git master, interactive, you pick the trial)
+2. **Fine-tune** with Axolotl SFT (LoRA, Qwen3.5 support)
+3. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
+4. **Quantize** to FP8 (float8_e4m3fn), NVFP4 (ComfyUI-native, Blackwell-optimized)
+5. **GGUF** conversion with multiple quantization levels via llama.cpp
 
 ## Requirements
 
-- NVIDIA GPU with latest drivers (tested on RTX 5090)
+- NVIDIA GPU with latest drivers
 - Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- HuggingFace account with access to gated models (if targeting gated models like Gemma)
+- HuggingFace account with access to gated models (if targeting gated models)
 
 ## Quick start
 
 ```bash
 # Clone and enter the repo
-git clone https://github.com/YOUR_USER/heretic-docker.git
+git clone https://github.com/dreamfast/heretic-docker.git
 cd heretic-docker
 
 # Set up your HuggingFace token
 cp .env.example .env
 # Edit .env and add your HF token
-
-# Create output directories
-mkdir -p output models
 
 # Build the container (first time takes a while - NGC base is ~20GB)
 ./heretic.sh build
@@ -51,23 +49,44 @@ Then run the conversion pipeline:
 
 ## Using with any HuggingFace model
 
-Replace `google/gemma-3-12b-it` with any model ID:
+Replace the model ID as needed:
 
 ```bash
 ./heretic.sh abliterate meta-llama/Llama-3.1-8B-Instruct
-./heretic.sh abliterate Qwen/Qwen2.5-7B-Instruct
+./heretic.sh abliterate Qwen/Qwen3.5-9B
 ./heretic.sh abliterate mistralai/Mistral-7B-Instruct-v0.3
 ```
 
-You can also pass Heretic CLI flags:
+You can also pass Heretic CLI flags **after** the model name:
 
 ```bash
 # Custom trial count
-./heretic.sh abliterate --n-trials 100 google/gemma-3-12b-it
+./heretic.sh abliterate google/gemma-3-12b-it --n-trials 100
 
 # Use LoRA-based abliteration with 4-bit quantization (for large models)
-./heretic.sh abliterate --quantization BNB_4BIT google/gemma-3-27b-it
+./heretic.sh abliterate google/gemma-3-27b-it --quantization BNB_4BIT
 ```
+
+**Important:** The model name must come first, flags come after.
+
+## Fine-tuning with Axolotl
+
+After abliteration, you can fine-tune the model with your own SFT data using Axolotl.
+
+```bash
+# 1. Place your ShareGPT-format data in ./data/
+cp my_sft_data.jsonl ./data/
+
+# 2. Fine-tune (model path optional, defaults to /output/hf-model)
+./heretic.sh finetune sft.jsonl /output/hf-model
+
+# 3. Merge LoRA adapter into base model
+./heretic.sh merge
+```
+
+The default config uses LoRA (rank 16, alpha 32), bf16, with sample packing enabled. Edit `./configs/sft.yml` to customize.
+
+For more details, see the [Axolotl documentation](https://github.com/axolotl-ai-cloud/axolotl).
 
 ## Output formats
 
@@ -96,7 +115,7 @@ All ComfyUI formats strip the `language_model.*` prefix and embed the tokenizer 
 | Q4_K_S | ~6.5 GB | Smaller Q4 variant |
 | Q3_K_M | ~5.6 GB | For low VRAM only |
 
-GGUF files are text-only (no vision). They work with llama.cpp directly and with ComfyUI via [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Gemma 3 support merged in [PR #402](https://github.com/city96/ComfyUI-GGUF/pull/402)). When using GGUF in ComfyUI, load via the `DualClipLoader (GGUF)` node with embedding connectors from [Kijai/LTXV2_comfy](https://huggingface.co/Kijai/LTXV2_comfy/tree/main/text_encoders) (use the **dev** connectors, not distilled).
+GGUF files are text-only (no vision). They work with llama.cpp directly and with ComfyUI via [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF).
 
 ### Other outputs
 
@@ -134,12 +153,16 @@ You can run any conversion step independently:
 ./heretic.sh shell
 ```
 
-## GPU configuration
+## GPU selection
 
-By default, the container uses GPU 0. To change this, set `GPU_ID` in your `.env` file:
+Select a GPU with `CUDA_VISIBLE_DEVICES`:
 
 ```bash
-GPU_ID=1  # Use GPU 1 instead
+# Use GPU 0
+CUDA_VISIBLE_DEVICES=0 ./heretic.sh abliterate Qwen/Qwen3.5-9B
+
+# Use GPU 1
+CUDA_VISIBLE_DEVICES=1 ./heretic.sh abliterate Qwen/Qwen3.5-9B
 ```
 
 ## File permissions
@@ -154,30 +177,22 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 - Models are on your host filesystem, not buried in Docker layers
 - You can pre-download models or share the cache between projects
 
-## Blackwell GPU compatibility
-
-This container includes patches for NVIDIA Blackwell architecture (sm_120) compatibility:
-
-- **Base image**: `nvcr.io/nvidia/pytorch:26.02-py3` (NGC PyTorch with sm_120 CUDA kernels)
-- **SDPA attention**: Patched into Heretic's model loading (default Gemma 3 attention kernels lack sm_120 support)
-- **bitsandbytes stub**: Stubbed out since no CUDA 13.1 binary exists yet
-
-These patches are transparent - the container also works on older GPUs (RTX 4090, 3090, etc.) since SDPA is universally supported.
-
 ## Project structure
 
 ```
 .
 ├── heretic.sh              # Helper script (./heretic.sh --help)
-├── Dockerfile              # NGC PyTorch base + heretic-llm + llama.cpp + patches
-├── docker-compose.yml      # Services: heretic (interactive) + convert
+├── Dockerfile              # NGC PyTorch base + heretic (git master) + transformers (git master)
+├── Dockerfile.axolotl      # Axolotl with Qwen3.5 support
+├── docker-compose.yml      # Services: heretic (interactive) + convert + axolotl
 ├── entrypoint.sh           # UID/GID matching via gosu
 ├── .env.example            # HuggingFace token template
 ├── .dockerignore
 ├── .gitignore
 ├── patches/
-│   ├── blackwell_compat.py # bitsandbytes stub for CUDA 13.1
-│   └── patch_sdpa.py       # Injects SDPA attention into heretic
+│   └── blackwell_compat.py # bitsandbytes stub for CUDA 13.1
+├── configs/                # Axolotl SFT configs (user-provided)
+├── data/                   # Training data (user-provided)
 └── scripts/
     ├── convert_all.sh            # Orchestrates all conversion steps (5 stages)
     ├── merge_safetensors.py      # Merge shards, keep all keys (vision intact)
@@ -190,5 +205,6 @@ These patches are transparent - the container also works on older GPUs (RTX 4090
 ## Credits
 
 - [Heretic](https://github.com/p-e-w/heretic) by Philipp Emanuel Weidmann
+- [Axolotl](https://github.com/axolotl-ai-cloud/axolotl) for SFT fine-tuning
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF conversion and quantization
 - [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) for NVFP4 quantization

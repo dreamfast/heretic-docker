@@ -10,3 +10,4 @@ data/*
 *.gguf
 *.safetensors
 REPORT.md
+.venv/

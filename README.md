@@ -1,16 +1,15 @@
 # heretic-docker
 
-Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration and fine-tuning on NVIDIA GPUs.
+Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration on NVIDIA GPUs.
 
-Produces ComfyUI-compatible text encoder formats (with vision preserved), FP8/NVFP4 quantized variants, and GGUF quants for llama.cpp. Includes [Axolotl](https://github.com/axolotl-ai-cloud/axolotl) for SFT fine-tuning.
+Produces ComfyUI-compatible text encoder formats (with vision preserved), FP8/NVFP4 quantized variants, and GGUF quants for llama.cpp.
 
 ## What it does
 
 1. **Abliterate** any HuggingFace model using Heretic (git master, interactive, you pick the trial)
-2. **Fine-tune** with Axolotl SFT (LoRA, Qwen3.5 support)
-3. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
-4. **Quantize** to FP8 (float8_e4m3fn), NVFP4 (ComfyUI-native, Blackwell-optimized)
-5. **GGUF** conversion with multiple quantization levels via llama.cpp
+2. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
+3. **Quantize** to FP8 (float8_e4m3fn), NVFP4 (ComfyUI-native, Blackwell-optimized)
+4. **GGUF** conversion with multiple quantization levels via llama.cpp
 
 ## Requirements
 
@@ -68,25 +67,6 @@ You can also pass Heretic CLI flags **after** the model name:
 ```
 
 **Important:** The model name must come first, flags come after.
-
-## Fine-tuning with Axolotl
-
-After abliteration, you can fine-tune the model with your own SFT data using Axolotl.
-
-```bash
-# 1. Place your ShareGPT-format data in ./data/
-cp my_sft_data.jsonl ./data/
-
-# 2. Fine-tune (model path optional, defaults to /output/hf-model)
-./heretic.sh finetune sft.jsonl /output/hf-model
-
-# 3. Merge LoRA adapter into base model
-./heretic.sh merge
-```
-
-The default config uses LoRA (rank 16, alpha 32), bf16, with sample packing enabled. Edit `./configs/sft.yml` to customize.
-
-For more details, see the [Axolotl documentation](https://github.com/axolotl-ai-cloud/axolotl).
 
 ## Output formats
 
@@ -183,16 +163,13 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 .
 ├── heretic.sh              # Helper script (./heretic.sh --help)
 ├── Dockerfile              # NGC PyTorch base + heretic (git master) + transformers (git master)
-├── Dockerfile.axolotl      # Axolotl with Qwen3.5 support
-├── docker-compose.yml      # Services: heretic (interactive) + convert + axolotl
+├── docker-compose.yml      # Services: heretic (interactive) + convert
 ├── entrypoint.sh           # UID/GID matching via gosu
 ├── .env.example            # HuggingFace token template
 ├── .dockerignore
 ├── .gitignore
 ├── patches/
 │   └── blackwell_compat.py # bitsandbytes stub for CUDA 13.1
-├── configs/                # Axolotl SFT configs (user-provided)
-├── data/                   # Training data (user-provided)
 └── scripts/
     ├── convert_all.sh            # Orchestrates all conversion steps (5 stages)
     ├── merge_safetensors.py      # Merge shards, keep all keys (vision intact)
@@ -205,6 +182,5 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 ## Credits
 
 - [Heretic](https://github.com/p-e-w/heretic) by Philipp Emanuel Weidmann
-- [Axolotl](https://github.com/axolotl-ai-cloud/axolotl) for SFT fine-tuning
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF conversion and quantization
 - [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) for NVFP4 quantization

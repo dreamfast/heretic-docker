@@ -29,6 +29,18 @@ fi
 
 F16_FILE="${GGUF_DIR}/${MODEL_NAME}-f16.gguf"
 
+python3 -c "
+import json, sys
+p = '$MODEL_DIR/tokenizer_config.json'
+with open(p) as f:
+    cfg = json.load(f)
+if isinstance(cfg.get('extra_special_tokens'), list):
+    cfg['extra_special_tokens'] = {t: t for t in cfg['extra_special_tokens']}
+    with open(p, 'w') as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    print('Patched extra_special_tokens: list -> dict')
+"
+
 # ─── Step 1: Convert HF to GGUF F16 ─────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════"
 echo " GGUF: Converting HF model to F16"

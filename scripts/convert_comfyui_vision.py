@@ -40,33 +40,46 @@ def main():
         print(f"  {os.path.basename(f)}")
         all_tensors.update(load_file(f))
 
-    # Rename language_model.* keys but KEEP vision_tower.* and multi_modal_projector.*
+    # Detect key naming convention (Qwen2.5-VL vs Qwen3-VL)
+    has_qwen25_prefix = any(k.startswith("vision_tower.") for k in all_tensors)
+    has_qwen3_prefix = any(k.startswith("model.language_model.") for k in all_tensors)
+
     renamed = {}
     vision_keys = 0
     projector_keys = 0
     language_keys = 0
+    passed_through = 0
 
     for k, v in all_tensors.items():
-        if k.startswith("vision_tower."):
-            # Strip "vision_tower." prefix - ComfyUI expects "vision_model.*" not "vision_tower.vision_model.*"
+        if has_qwen25_prefix and k.startswith("vision_tower."):
             new_key = k[len("vision_tower."):]
             renamed[new_key] = v
             vision_keys += 1
-        elif k.startswith("multi_modal_projector."):
+        elif has_qwen25_prefix and k.startswith("multi_modal_projector."):
             renamed[k] = v
             projector_keys += 1
-        elif k.startswith("language_model."):
+        elif has_qwen25_prefix and k.startswith("language_model."):
             new_key = k[len("language_model."):]
             renamed[new_key] = v
             language_keys += 1
+        elif has_qwen3_prefix and k.startswith("model.language_model."):
+            new_key = "model." + k[len("model.language_model."):]
+            renamed[new_key] = v
+            language_keys += 1
+        elif has_qwen3_prefix and k.startswith("model.visual."):
+            renamed[k] = v
+            vision_keys += 1
         else:
             renamed[k] = v
+            passed_through += 1
 
-    print(f"\nKey summary:")
-    print(f"  vision_tower.*:          {vision_keys} tensors (preserved)")
-    print(f"  multi_modal_projector.*: {projector_keys} tensors (preserved)")
-    print(f"  language_model.*:        {language_keys} tensors (prefix stripped)")
-    print(f"  TOTAL:                   {len(renamed)} tensors")
+    mode = "Qwen3-VL" if has_qwen3_prefix else ("Qwen2.5-VL" if has_qwen25_prefix else "passthrough")
+    print(f"\nKey summary (detected: {mode}):")
+    print(f"  vision keys:    {vision_keys} tensors (preserved)")
+    print(f"  projector keys: {projector_keys} tensors (preserved)")
+    print(f"  language keys:  {language_keys} tensors (prefix stripped)")
+    print(f"  passthrough:    {passed_through} tensors")
+    print(f"  TOTAL:          {len(renamed)} tensors")
 
     # Embed tokenizer
     tokenizer_path = os.path.join(model_dir, "tokenizer.model")

@@ -1,14 +1,8 @@
-# Heretic LLM Abliteration Pipeline
+# Heretic LLM Abliteration Pipeline (v1.3.0)
 #
-# Phase 1 - Interactive abliteration:
+# Usage:
 #   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm heretic heretic google/gemma-3-12b-it
 #   (select trial, save to /output/hf-model)
-#
-# Phase 2 - Convert to all formats:
-#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm heretic /scripts/convert_all.sh /output/hf-model
-#
-# Or use the 'convert' service shortcut:
-#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm convert
 
 services:
   heretic:
@@ -18,41 +12,10 @@ services:
       - HOST_UID=${HOST_UID:-1000}
       - HOST_GID=${HOST_GID:-1000}
       - HF_TOKEN=${HF_TOKEN}
-      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=${GPU_ID:-0}
     volumes:
       - ./output:/output
       - ./models:/models
-    stdin_open: true
-    tty: true
-
-  convert:
-    build: .
-    environment:
-      - HOST_UID=${HOST_UID:-1000}
-      - HOST_GID=${HOST_GID:-1000}
-    volumes:
-      - ./output:/output
-      - ./models:/models
-    command: /scripts/convert_all.sh /output/hf-model
-
-  axolotl:
-    build:
-      context: .
-      dockerfile: Dockerfile.axolotl
-    entrypoint: []
-    runtime: nvidia
-    environment:
-      - HOST_UID=${HOST_UID:-1000}
-      - HOST_GID=${HOST_GID:-1000}
-      - HF_TOKEN=${HF_TOKEN}
-      - HF_HOME=/models/huggingface
-      - CUDA_VISIBLE_DEVICES=1
-      - DATA_PATH=${DATA_PATH}
-      - BASE_MODEL=${BASE_MODEL:-/output/hf-model}
-    volumes:
-      - ./output:/output
-      - ./models:/models
-      - ./configs:/configs
-      - ./data:/data
+      - ./scripts:/scripts
     stdin_open: true
     tty: true

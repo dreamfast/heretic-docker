@@ -6,7 +6,7 @@
 #   ./heretic.sh build                          Build the container
 #   ./heretic.sh abliterate <model>             Run Heretic abliteration (interactive)
 #   ./heretic.sh convert <dir> <name>           Full conversion pipeline (ComfyUI + GGUF)
-#   ./heretic.sh comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + nvfp4)
+#   ./heretic.sh comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8)
 #   ./heretic.sh gguf <dir> <name>              GGUF conversion with quantizations
 #   ./heretic.sh shell                          Open a bash shell in the container
 #   ./heretic.sh run <command...>               Run an arbitrary command in the container
@@ -25,6 +25,8 @@ container_path() {
     abs="$(cd "$(dirname "$p")" && pwd)/$(basename "$p")"
     if [[ "$abs" == "$SCRIPT_DIR/output"* ]]; then
         echo "/output${abs#$SCRIPT_DIR/output}"
+    elif [[ "$abs" == "$SCRIPT_DIR/models"* ]]; then
+        echo "/models${abs#$SCRIPT_DIR/models}"
     else
         echo "$p"
     fi
@@ -37,7 +39,7 @@ usage() {
     echo "  build                          Build the Docker container"
     echo "  abliterate <model> [flags]     Run Heretic abliteration (interactive)"
     echo "  convert <dir> <name>           Full conversion pipeline (ComfyUI + GGUF)"
-    echo "  comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + nvfp4)"
+    echo "  comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8)"
     echo "  gguf <dir> <name>              GGUF conversion with quantizations"
     echo "  shell                          Open a bash shell in the container"
     echo "  run <command...>               Run an arbitrary command in the container"
@@ -91,17 +93,7 @@ case "$CMD" in
             echo "Usage: ./heretic.sh comfyui <model_dir> <model_name>"
             exit 1
         fi
-        MODEL_DIR="$(container_path "$1")"
-        MODEL_NAME="$2"
-        MERGED_FILE="/output/merged/${MODEL_NAME}-full.safetensors"
-        COMFYUI_FILE="/output/comfyui/${MODEL_NAME}.safetensors"
-        FP8_FILE="/output/comfyui/${MODEL_NAME}_fp8_e4m3fn.safetensors"
-        NVFP4_FILE="/output/comfyui/${MODEL_NAME}_nvfp4.safetensors"
-        docker compose run --rm heretic bash -c "\
-            python3 /scripts/merge_safetensors.py $MODEL_DIR $MERGED_FILE && \
-            python3 /scripts/convert_comfyui_vision.py $MODEL_DIR $COMFYUI_FILE && \
-            python3 /scripts/quantize_fp8.py $COMFYUI_FILE $FP8_FILE && \
-            python3 /scripts/quantize_nvfp4.py $COMFYUI_FILE $NVFP4_FILE"
+        docker compose run --rm heretic bash /scripts/convert_comfyui.sh "$(container_path "$1")" "$2"
         ;;
 
     gguf)

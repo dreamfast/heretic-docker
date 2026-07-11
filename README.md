@@ -2,13 +2,17 @@
 
 Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration on NVIDIA GPUs.
 
-Produces ComfyUI-compatible text encoder formats (with vision preserved), FP8/NVFP4 quantized variants, and GGUF quants for llama.cpp.
+Produces ComfyUI-compatible text encoder formats (with vision preserved) in five quantization levels — FP8, INT8 (ConvRot), NVFP4, MXFP8 — plus GGUF quants for llama.cpp.
 
 ## What it does
 
 1. **Abliterate** any HuggingFace model using Heretic (git master, interactive, you pick the trial)
 2. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
-3. **Quantize** to FP8 (float8_e4m3fn), NVFP4 (ComfyUI-native, Blackwell-optimized)
+3. **Quantize** to five formats:
+   - **FP8** (float8_e4m3fn, per-tensor scaled via convert-to-quant)
+   - **INT8** (block-wise, ConvRot learned rounding — near-lossless, works on any GPU)
+   - **NVFP4** (4-bit float E2M1, double quantization, Blackwell-optimized)
+   - **MXFP8** (Microscaling FP8, OCP MX standard, E8M0 block scales, Blackwell)
 4. **GGUF** conversion with multiple quantization levels via llama.cpp
 
 ## Requirements
@@ -74,13 +78,25 @@ After running the conversion pipeline, `./output/` contains:
 
 ### ComfyUI safetensors (with vision)
 
-| Path | Description | Size (12B) |
-|------|-------------|------------|
-| `comfyui/<name>.safetensors` | bf16 | ~23 GB |
-| `comfyui/<name>_fp8_e4m3fn.safetensors` | fp8 | ~12 GB |
-| `comfyui/<name>_nvfp4.safetensors` | nvfp4 | ~7.8 GB |
+| Path | Format | Size (12B) | HW | Description |
+|------|--------|------------|-----|-------------|
+| `comfyui/<name>.safetensors` | bf16 | ~23 GB | Any | Full precision |
+| `comfyui/<name>_fp8_e4m3fn.safetensors` | FP8 E4M3 | ~12 GB | Ada+ | Per-tensor scaled (convert-to-quant) |
+| `comfyui/<name>_int8.safetensors` | INT8 | ~13 GB | Any | Block-wise with ConvRot learned rounding |
+| `comfyui/<name>_nvfp4.safetensors` | NVFP4 E2M1 | ~7.8 GB | Blackwell | 4-bit float, double quantization |
+| `comfyui/<name>_mxfp8.safetensors` | MXFP8 | ~13 GB | Blackwell | Microscaling FP8, E8M0 block scales |
 
 All ComfyUI formats strip the `language_model.*` prefix and embed the tokenizer as a `spiece_model` tensor. Vision weights (`vision_model.*` and `multi_modal_projector.*`) are preserved for I2V prompt enhancement. The vision weights add minimal overhead (~1 GB) and are simply unused during T2V.
+
+### Format details
+
+**FP8 (E4M3)** — Per-tensor scaled quantization via [convert-to-quant](https://github.com/silveroxides/convert_to_quant). Falls back to naive cast if CTQ is unavailable. Works on Ada (RTX 4090) and newer.
+
+**INT8 (ConvRot)** — Block-wise symmetric INT8 [-127, 127] with [ConvRot](https://github.com/silveroxides/convert_to_quant) learned rounding optimization. For each weight tensor, an SVD-guided gradient descent loop (Prodigy optimizer) learns the optimal rounding direction to minimize output error. This produces near-lossless INT8 quality — significantly better than naive round-to-nearest. Works on any modern GPU (Ampere+). Vision encoder weights are excluded due to non-standard dimensions.
+
+**NVFP4 (E2M1)** — 4-bit floating point with double quantization (per-tensor f32 scale + per-block FP8 e4m3 scale, block size 16). Each quantized weight stores packed FP4 data, block scales, tensor scale, and `comfy_quant` metadata. Pure-PyTorch implementation with optional [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) CUDA acceleration. Requires SM100+ (Blackwell) for native FP4 tensor cores; software dequant works on older GPUs.
+
+**MXFP8** — Microscaling FP8 (OCP MX standard). FP8 E4M3 data with E8M0 (power-of-2 exponent) per-block scales using 32-element blocks. Better dynamic range handling than per-tensor FP8. Requires SM100+ (Blackwell) for hardware-accelerated dequant. Quantized via convert-to-quant.
 
 ### GGUF (for llama.cpp)
 
@@ -104,30 +120,23 @@ GGUF files are text-only (no vision). They work with llama.cpp directly and with
 | `<name>/` | Full HuggingFace model (shards + config + tokenizer) |
 | `merged/<name>-full.safetensors` | Single merged safetensors with all keys |
 
-### NVFP4 quantization
-
-The NVFP4 (4-bit floating point, E2M1 format) variants use ComfyUI's native quantization format via [comfy_kitchen](https://pypi.org/project/comfy-kitchen/). Each quantized weight stores:
-
-- Packed FP4 data (2 values per byte)
-- Per-block FP8 scales (block size 16)
-- Per-tensor float32 scale (double quantization)
-- `comfy_quant` metadata for automatic ComfyUI detection
-
-The quantized files are ~3x smaller than bf16 and load natively in ComfyUI without any plugins. Blackwell GPUs (RTX 5090/5080) use native FP4 tensor cores for best performance, but ComfyUI also supports software dequantization on older GPUs (tested working on RTX 4090).
-
 ## Running individual stages
 
-You can run any conversion step independently:
+All stages support **skip-if-exists** caching — re-running the pipeline will skip any format that's already been generated.
 
 ```bash
-# Just the GGUF conversion
-./heretic.sh gguf /output/hf-model my-model-name
+# Full pipeline (ComfyUI formats + GGUF)
+./heretic.sh convert /output/hf-model my-model-name
 
-# Re-run ComfyUI variants only (bf16 + fp8 + nvfp4)
+# ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8, no GGUF)
 ./heretic.sh comfyui /output/hf-model my-model-name
 
-# Run an arbitrary command in the container
-./heretic.sh run python3 /scripts/quantize_fp8.py /output/comfyui/input.safetensors /output/comfyui/output_fp8.safetensors
+# GGUF conversion only
+./heretic.sh gguf /output/hf-model my-model-name
+
+# Run individual quantization scripts
+./heretic.sh run python3 /scripts/quantize_int8.py /output/comfyui/input.safetensors /output/comfyui/output_int8.safetensors
+./heretic.sh run python3 /scripts/quantize_mxfp8.py /output/comfyui/input.safetensors /output/comfyui/output_mxfp8.safetensors
 
 # Open a shell for debugging
 ./heretic.sh shell
@@ -135,15 +144,21 @@ You can run any conversion step independently:
 
 ## GPU selection
 
-Select a GPU with `CUDA_VISIBLE_DEVICES`:
+Select a GPU with the `GPU_ID` environment variable:
 
 ```bash
-# Use GPU 0
-CUDA_VISIBLE_DEVICES=0 ./heretic.sh abliterate Qwen/Qwen3.5-9B
+# Use GPU 0 (default)
+./heretic.sh convert /output/hf-model my-model-name
 
 # Use GPU 1
-CUDA_VISIBLE_DEVICES=1 ./heretic.sh abliterate Qwen/Qwen3.5-9B
+GPU_ID=1 ./heretic.sh convert /output/hf-model my-model-name
 ```
+
+## INT8 ConvRot notes
+
+The INT8 ConvRot stage is significantly slower than other formats because it runs a per-tensor optimization loop (up to 4000 iterations of Prodigy optimizer with SVD projection). For a 12B model with ~500 weight tensors, expect 30-60 minutes on GPU (vs seconds for FP8/MXFP8). Early stopping kicks in automatically when the learning rate bottoms out.
+
+The optimization runs on CUDA when available, falling back to CPU (much slower). Vision encoder weights are excluded from INT8 quantization due to non-standard tensor dimensions.
 
 ## File permissions
 
@@ -162,25 +177,33 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 ```
 .
 ├── heretic.sh              # Helper script (./heretic.sh --help)
-├── Dockerfile              # NGC PyTorch base + heretic (git master) + transformers (git master)
-├── docker-compose.yml      # Services: heretic (interactive) + convert
+├── Dockerfile              # NGC PyTorch base + heretic + transformers + convert-to-quant + comfy-kitchen
+├── docker-compose.yml      # Single heretic service (GPU, volumes, UID/GID)
 ├── entrypoint.sh           # UID/GID matching via gosu
 ├── .env.example            # HuggingFace token template
 ├── .dockerignore
 ├── .gitignore
 ├── patches/
-│   └── blackwell_compat.py # bitsandbytes stub for CUDA 13.1
+│   ├── blackwell_compat.py         # bitsandbytes stub for CUDA 13.1
+│   ├── patch_hf_union_types.py     # huggingface_hub PEP 604 union type fix
+│   ├── patch_hub_kernels.py        # transformers hub_kernels stub
+│   └── patch_tokenizer_special_tokens.py
 └── scripts/
-    ├── convert_all.sh            # Orchestrates all conversion steps (5 stages)
-    ├── merge_safetensors.py      # Merge shards, keep all keys (vision intact)
-    ├── convert_comfyui_vision.py # ComfyUI format with vision preserved
-    ├── quantize_fp8.py           # FP8 e4m3fn quantization
-    ├── quantize_nvfp4.py         # NVFP4 quantization (ComfyUI-native, Blackwell)
-    └── convert_gguf.sh           # GGUF conversion + quantization via llama.cpp
+    ├── convert_all.sh              # Full pipeline (7 stages, skip-if-exists)
+    ├── convert_comfyui.sh          # ComfyUI stages only (6 stages, skip-if-exists)
+    ├── merge_safetensors.py        # Merge shards, keep all keys (vision intact)
+    ├── convert_comfyui_vision.py   # ComfyUI format with vision preserved
+    ├── quantize_fp8.py             # FP8 e4m3fn (CTQ per-tensor scaled, naive fallback)
+    ├── quantize_int8.py            # INT8 block-wise with ConvRot learned rounding (CTQ)
+    ├── quantize_nvfp4.py           # NVFP4 E2M1 4-bit (double quantization, comfy_kitchen)
+    ├── quantize_mxfp8.py           # MXFP8 microscaling FP8 (CTQ, E8M0 block scales)
+    ├── convert_gguf.sh             # GGUF conversion + quantization via llama.cpp
+    └── compare_models.py           # Debug utility: compare tensor keys between files
 ```
 
 ## Credits
 
 - [Heretic](https://github.com/p-e-w/heretic) by Philipp Emanuel Weidmann
+- [convert-to-quant](https://github.com/silveroxides/convert_to_quant) by silveroxides — INT8 ConvRot, FP8 scaling, MXFP8 quantization
+- [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) by Comfy-Org — NVFP4/MXFP8 CUDA kernels
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF conversion and quantization
-- [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) for NVFP4 quantization

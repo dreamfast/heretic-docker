@@ -2,9 +2,13 @@
 """
 Quantize a safetensors model to FP8 (float8_e4m3fn).
 
-Converts large 2D float weight tensors to float8_e4m3fn.
-Leaves biases, norms, embeddings, and small tensors in their original dtype
-since ComfyUI performs element-wise ops (add) on those, and Blackwell GPUs
+Primary: Uses convert_to_quant (CTQ) for FP8 with per-tensor scaling and
+          ComfyUI-compatible comfy_quant metadata output. Strictly better than
+          naive cast because it computes proper per-tensor scales.
+Fallback: Pure PyTorch naive cast (.to(float8_e4m3fn)) when CTQ is unavailable.
+
+Both modes leave biases, norms, embeddings, and small tensors in their original
+dtype since ComfyUI performs element-wise ops (add) on those, and Blackwell GPUs
 don't support ufunc_add for Float8_e4m3fn.
 
 Based on: https://nathan.sapwell.net/posts/heretic-gemma-12b/
@@ -26,13 +30,10 @@ def should_quantize_fp8(key, tensor):
     """Only quantize large 2D weight matrices, not biases/norms/embeddings."""
     if tensor.dtype not in FLOAT_DTYPES:
         return False
-    # Only quantize 2D weight tensors (linear layers)
     if tensor.ndim != 2:
         return False
-    # Skip small tensors
     if tensor.numel() < 256:
         return False
-    # Skip embeddings, norms, biases by key name
     key_lower = key.lower()
     for skip in ["embed", "norm", "bias", "lm_head", "spiece_model"]:
         if skip in key_lower:
@@ -40,16 +41,25 @@ def should_quantize_fp8(key, tensor):
     return True
 
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: quantize_fp8.py <input_file> <output_file>")
-        sys.exit(1)
+def quantize_ctq(input_file, output_file):
+    """FP8 quantization via convert_to_quant (per-tensor scaling, comfy_quant)."""
+    from convert_to_quant import quantize
 
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    print("Using convert_to_quant for FP8 (per-tensor scaling, comfy_quant)")
+    quantize(
+        input=input_file,
+        output=output_file,
+        comfy_quant=True,
+        save_quant_metadata=True,
+        low_memory=True,
+        simple=True,
+        verbose="VERBOSE",
+    )
 
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
+def quantize_naive(input_file, output_file):
+    """FP8 quantization via naive PyTorch cast (fallback when CTQ unavailable)."""
+    print("WARNING: convert-to-quant not available, using naive FP8 cast (no scaling)")
     print(f"Loading {input_file}...")
     tensors = load_file(input_file)
 
@@ -71,9 +81,32 @@ def main():
     print(f"\nSaving FP8 model to {output_file}...")
     save_file(fp8_tensors, output_file, metadata={"format": "pt"})
 
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: quantize_fp8.py <input_file> <output_file>")
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+
+    used_ctq = False
+    try:
+        quantize_ctq(input_file, output_file)
+        used_ctq = True
+    except ImportError:
+        quantize_naive(input_file, output_file)
+    except Exception as e:
+        print(f"convert_to_quant failed ({e}), falling back to naive cast")
+        quantize_naive(input_file, output_file)
+
     input_size = os.path.getsize(input_file) / (1024**3)
     output_size = os.path.getsize(output_file) / (1024**3)
-    print(f"Done. {input_size:.2f} GB -> {output_size:.2f} GB ({output_size/input_size*100:.1f}%)")
+    pct = output_size / input_size * 100 if input_size > 0 else 0
+    method = "CTQ (per-tensor scaled)" if used_ctq else "naive cast (unscaled)"
+    print(f"Done [{method}]. {input_size:.2f} GB -> {output_size:.2f} GB ({pct:.1f}%)")
 
 
 if __name__ == "__main__":

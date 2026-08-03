@@ -9,18 +9,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Nuke ALL conflicting NGC packages cleanly, then install heretic v1.3.0.
-# Keep only torch + triton from NGC (the sm_120 builds we need).
+# Nuke ALL conflicting NGC packages cleanly, then install heretic master.
+# Keep torch + triton + torchvision from NGC (the sm_120 builds we need).
+# torchvision is required by multimodal/VL models (e.g. Qwen3-VL) whose
+# AutoProcessor loads an AutoVideoProcessor; keep the NGC-matched build to
+# avoid a CUDA/version mismatch with the NGC torch.
+#
+# Master branch provides native headless mode (--checkpoint-action, --trial-index,
+# --model-action, --save-directory) which enables automated sweep workflows.
+# heretic master pulls transformers[kernels]~=5.6 and all other deps itself.
 RUN pip uninstall -y \
     huggingface-hub transformers tokenizers accelerate safetensors \
-    datasets peft torchvision kernels 2>/dev/null || true && \
+    datasets peft kernels 2>/dev/null || true && \
     find /usr/local/lib/python3.12/dist-packages -maxdepth 1 \( \
     -name "huggingface_hub*" -o -name "transformers*" -o -name "tokenizers*" \
     -o -name "accelerate*" -o -name "safetensors*" -o -name "datasets*" \
-    -o -name "peft*" -o -name "torchvision*" -o -name "kernels*" \) | xargs rm -rf && \
-    pip install --no-cache-dir \
-    git+https://github.com/huggingface/transformers.git && \
-    git clone --branch v1.3.0 --depth 1 https://github.com/p-e-w/heretic.git /tmp/heretic && \
+    -o -name "peft*" -o -name "kernels*" \) | xargs rm -rf && \
+    git clone --branch master --depth 1 https://github.com/p-e-w/heretic.git /tmp/heretic && \
     pip install --no-cache-dir /tmp/heretic hf-transfer && \
     rm -rf /tmp/heretic
 
@@ -30,6 +35,7 @@ RUN pip uninstall -y \
 COPY patches/patch_hf_union_types.py /tmp/patch_hf_union_types.py
 COPY patches/patch_hub_kernels.py /tmp/patch_hub_kernels.py
 COPY patches/patch_tokenizer_special_tokens.py /tmp/patch_tokenizer_special_tokens.py
+COPY patches/patch_n_top_trials.py /tmp/patch_n_top_trials.py
 
 # SDPA patch disabled -- it breaks heretic abliteration on Qwen3
 # Only needed for Blackwell (5090) GPUs. Re-enable if running on 5090.
@@ -46,12 +52,14 @@ RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /llama.cpp &&
     cmake -B build -DLLAMA_CUDA=OFF -DGGML_CUDA=OFF && \
     cmake --build build --config Release -j$(nproc) --target llama-quantize && \
     pip install --no-cache-dir -r requirements/requirements-convert_hf_to_gguf.txt && \
+    pip install --no-cache-dir --force-reinstall --no-deps ./gguf-py && \
     rm -rf /llama.cpp/.git /llama.cpp/gguf-py
 
 RUN python3 /tmp/patch_hf_union_types.py && \
     python3 /tmp/patch_hub_kernels.py && \
     python3 /tmp/patch_tokenizer_special_tokens.py && \
-    rm /tmp/patch_hf_union_types.py /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py
+    python3 /tmp/patch_n_top_trials.py && \
+    rm /tmp/patch_hf_union_types.py /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py /tmp/patch_n_top_trials.py
 
 # Install quantization toolkit: convert-to-quant (INT8 ConvRot, FP8, MXFP8, NVFP4)
 # and comfy-kitchen (CUDA/Triton kernels for NVFP4/MXFP8 quantization & dequantization)

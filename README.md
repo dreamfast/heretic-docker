@@ -72,6 +72,48 @@ You can also pass Heretic CLI flags **after** the model name:
 
 **Important:** The model name must come first, flags come after.
 
+## Automated sweep
+
+Sometimes a single Heretic run doesn't find a good abliteration. The `sweep` command automates running Heretic multiple times with different random seeds and collecting the best LoRA adapters:
+
+```bash
+# Run 10 sweeps with 200 trials each, collect best adapters
+./heretic.sh sweep Qwen/Qwen3-4B --runs 10 --trials 200 --batch-size 64
+
+# Fewer trials per run (faster but less thorough)
+./heretic.sh sweep Qwen/Qwen3-4B --runs 20 --trials 50 --batch-size 64
+
+# With quantization for large models
+./heretic.sh sweep google/gemma-3-27b-it --runs 10 --trials 100 --quantization BNB_4BIT
+```
+
+Each run uses a unique random seed, so the optimization explores different parameter
+combinations. After all runs complete, you get:
+- A ranked summary table of all adapters (sorted by refusals, then KL divergence)
+- Each adapter named with model, seed, trial number, KL, and refusal count
+- The checkpoint JSONL alongside each adapter for full reproducibility
+- A prompt to merge the best adapter into the base model
+
+Output structure:
+```
+output/sweep-20260714-120000/
+  run-0/qwen3-4b-s12345-t78_kl0.0001_r2/
+    adapter_model.safetensors
+    adapter_config.json
+    checkpoint.jsonl        # full Optuna study for reproducibility
+    metrics.json            # trial scores
+  run-1/qwen3-4b-s67890-t45_kl0.0003_r1/
+    ...
+  summary.txt               # ranked table of all adapters
+  merged/                   # (if you chose to merge) full model
+```
+
+Sweep options:
+- `--runs N` — Number of independent runs (default: 10)
+- `--trials N` — Trials per run (default: 200)
+- `--batch-size N` — Fixed batch size, skips auto-detection (default: 64)
+- Extra flags pass through to heretic (e.g. `--quantization BNB_4BIT`)
+
 ## Output formats
 
 After running the conversion pipeline, `./output/` contains:
@@ -198,7 +240,9 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
     ├── quantize_nvfp4.py           # NVFP4 E2M1 4-bit (double quantization, comfy_kitchen)
     ├── quantize_mxfp8.py           # MXFP8 microscaling FP8 (CTQ, E8M0 block scales)
     ├── convert_gguf.sh             # GGUF conversion + quantization via llama.cpp
-    └── compare_models.py           # Debug utility: compare tensor keys between files
+    ├── compare_models.py           # Debug utility: compare tensor keys between files
+    ├── parse_checkpoint.py         # Parse Optuna checkpoint JSONL for sweep metrics
+    └── merge_lora.py               # Merge LoRA adapter into base model
 ```
 
 ## Credits

@@ -2,9 +2,11 @@
 """
 Quantize a safetensors model to FP8 (float8_e4m3fn).
 
-Primary: Uses convert_to_quant (CTQ) for FP8 with per-tensor scaling and
-          ComfyUI-compatible comfy_quant metadata output. Strictly better than
-          naive cast because it computes proper per-tensor scales.
+Primary: Uses convert_to_quant (CTQ) for FP8 with row-wise (per-row) scaling
+          and SVD-guided learned rounding (AdaRound) that minimizes output error,
+          with ComfyUI-compatible comfy_quant metadata (format=float8_e4m3fn_rowwise).
+          Strictly better than naive cast: per-row scales preserve dynamic range,
+          and learned rounding optimizes each weight's rounding direction.
 Fallback: Pure PyTorch naive cast (.to(float8_e4m3fn)) when CTQ is unavailable.
 
 Both modes leave biases, norms, embeddings, and small tensors in their original
@@ -42,17 +44,20 @@ def should_quantize_fp8(key, tensor):
 
 
 def quantize_ctq(input_file, output_file):
-    """FP8 quantization via convert_to_quant (per-tensor scaling, comfy_quant)."""
+    """FP8 quantization via convert_to_quant (row-wise scaling + learned rounding)."""
     from convert_to_quant import quantize
 
-    print("Using convert_to_quant for FP8 (per-tensor scaling, comfy_quant)")
+    print("Using convert_to_quant for FP8 (row-wise scaling + learned rounding, comfy_quant)")
     quantize(
         input=input_file,
         output=output_file,
+        scaling_mode="row",
         comfy_quant=True,
         save_quant_metadata=True,
         low_memory=True,
-        simple=True,
+        device="cuda",
+        exclude_layers=r"(embed|norm|bias|lm_head|spiece_model|multi_modal_projector|patch_embed|patch_conv)",
+        fallback_simple=True,
         verbose="VERBOSE",
     )
 
@@ -105,7 +110,7 @@ def main():
     input_size = os.path.getsize(input_file) / (1024**3)
     output_size = os.path.getsize(output_file) / (1024**3)
     pct = output_size / input_size * 100 if input_size > 0 else 0
-    method = "CTQ (per-tensor scaled)" if used_ctq else "naive cast (unscaled)"
+    method = "CTQ (row-wise + learned rounding)" if used_ctq else "naive cast (unscaled)"
     print(f"Done [{method}]. {input_size:.2f} GB -> {output_size:.2f} GB ({pct:.1f}%)")
 
 

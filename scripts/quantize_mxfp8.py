@@ -2,8 +2,8 @@
 """
 Quantize a safetensors model to MXFP8 (Microscaling FP8, OCP MX standard).
 
-Uses convert_to_quant (CTQ) for MXFP8 quantization with optional learned
-rounding. Produces ComfyUI-compatible output with comfy_quant metadata.
+Uses convert_to_quant (CTQ) for MXFP8 quantization with SVD-guided learned
+rounding (AdaRound). Produces ComfyUI-compatible output with comfy_quant metadata.
 
 MXFP8 (Microscaling FP8):
   - FP8 E4M3 data with E8M0 (power-of-2 exponent) per-block scales
@@ -41,7 +41,7 @@ def main():
         print("       Install with: pip install convert-to-quant")
         sys.exit(1)
 
-    print(f"MXFP8 (Microscaling FP8) quantization")
+    print(f"MXFP8 (Microscaling FP8) quantization (learned rounding)")
     print(f"Input:  {input_file}")
     print(f"Output: {output_file}")
     print(f"")
@@ -53,7 +53,7 @@ def main():
         comfy_quant=True,
         save_quant_metadata=True,
         low_memory=True,
-        simple=True,
+        device="cuda",
         exclude_layers=r"(embed|norm|bias|lm_head|spiece_model|multi_modal_projector|patch_embed|patch_conv)",
         fallback_simple=True,
         verbose="VERBOSE",

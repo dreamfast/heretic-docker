@@ -7,7 +7,8 @@
 #   ./heretic.sh abliterate <model>             Run Heretic abliteration (interactive)
 #   ./heretic.sh sweep <model> [options]        Automated multi-run sweep (headless)
 #   ./heretic.sh convert <dir> <name>           Full conversion pipeline (ComfyUI + GGUF)
-#   ./heretic.sh comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8)
+#   ./heretic.sh comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + int4 + nvfp4 + mxfp8)
+#   ./heretic.sh quants <file> <name>           Quantize an existing safetensors into all formats (fp8 + int8 + int4 + nvfp4 + mxfp8)
 #   ./heretic.sh gguf <dir> <name>              GGUF conversion with quantizations
 #   ./heretic.sh merge <base> <adapter> <out>   Merge a LoRA adapter into base model
 #   ./heretic.sh shell                          Open a bash shell in the container
@@ -43,7 +44,8 @@ usage() {
     echo "  sweep <model> [options]        Automated multi-run sweep (headless)"
     echo "  prune <sweep_dir> [--keep N]   Keep only best N adapters from a sweep"
     echo "  convert <dir> <name>           Full conversion pipeline (ComfyUI + GGUF)"
-    echo "  comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8)"
+    echo "  comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + int4 + nvfp4 + mxfp8)"
+    echo "  quants <file> <name>           Quantize existing safetensors into all formats (fp8 + int8 + int4 + nvfp4 + mxfp8)"
     echo "  gguf <dir> <name>              GGUF conversion with quantizations"
     echo "  merge <base> <adapter> <out>   Merge a LoRA adapter into base model"
     echo "  shell                          Open a bash shell in the container"
@@ -373,6 +375,14 @@ print(f'{v:.4f}' if v >= 0.001 else f'{v:.6f}')
             exit 1
         fi
         docker compose run --rm heretic bash /scripts/convert_comfyui.sh "$(container_path "$1")" "$2"
+        ;;
+
+    quants)
+        if [ $# -lt 2 ]; then
+            echo "Usage: ./heretic.sh quants <input_safetensors> <model_name>"
+            exit 1
+        fi
+        docker compose run --rm heretic bash /scripts/quantize_all.sh "$(container_path "$1")" "$2"
         ;;
 
     gguf)

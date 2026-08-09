@@ -61,10 +61,21 @@ RUN python3 /tmp/patch_hf_union_types.py && \
     python3 /tmp/patch_n_top_trials.py && \
     rm /tmp/patch_hf_union_types.py /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py /tmp/patch_n_top_trials.py
 
-# Install quantization toolkit: convert-to-quant (INT8 ConvRot, FP8, MXFP8, NVFP4)
+# Install quantization toolkit: convert-to-quant (INT4 W4A4 ConvRot, INT8 ConvRot, FP8, MXFP8, NVFP4)
 # and comfy-kitchen (CUDA/Triton kernels for NVFP4/MXFP8 quantization & dequantization)
 # --no-deps prevents pip from replacing the NGC CUDA torch with a CPU-only PyPI wheel
+# The patch below adds INT4 W4A4 ConvRot support (PR silveroxides/convert_to_quant#55) on top of
+# the PyPI release. The guard skips patching once upstream ships INT4 natively (forward-compatible).
+COPY patches/convert_to_quant_int4.patch /tmp/convert_to_quant_int4.patch
 RUN pip install --no-cache-dir --no-deps convert-to-quant && \
+    if ! python3 -c "from convert_to_quant.constants import INT4_SYMMETRIC_MAX" 2>/dev/null; then \
+        echo "Patching convert-to-quant: adding INT4 W4A4 ConvRot (PR #55)"; \
+        CTQ_DIR=$(python3 -c "import convert_to_quant, os; print(os.path.dirname(convert_to_quant.__file__))"); \
+        patch --no-backup-if-mismatch -p2 -d "$CTQ_DIR" < /tmp/convert_to_quant_int4.patch; \
+    else \
+        echo "convert-to-quant already has INT4; skipping patch"; \
+    fi && \
+    rm -f /tmp/convert_to_quant_int4.patch && \
     pip install --no-cache-dir --no-deps prodigy-plus-schedule-free && \
     (pip install --no-cache-dir --no-deps "comfy-kitchen[cublas]" 2>/dev/null || \
      pip install --no-cache-dir --no-deps comfy-kitchen 2>/dev/null || \

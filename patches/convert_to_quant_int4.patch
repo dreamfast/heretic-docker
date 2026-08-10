@@ -270,7 +270,7 @@ index 0c56e8a..7b0067e 100644
              verbose(f"    - Discretization audit: {best_converged_ratio * 100:.2f}% of parameters converged to strict boundaries.")
  
 diff --git a/convert_to_quant/formats/fp8_conversion.py b/convert_to_quant/formats/fp8_conversion.py
-index 33710d1..fc9ac63 100644
+index 33710d1..620fcec 100644
 --- a/convert_to_quant/formats/fp8_conversion.py
 +++ b/convert_to_quant/formats/fp8_conversion.py
 @@ -179,7 +179,7 @@ def convert_to_fp8_scaled(
@@ -299,7 +299,28 @@ index 33710d1..fc9ac63 100644
          is_mxfp8 = layer_format == "mxfp8"
          is_nvfp4 = layer_format == "nvfp4"
  
-@@ -606,6 +609,15 @@ def convert_to_fp8_scaled(
+@@ -530,9 +533,17 @@ def convert_to_fp8_scaled(
+             else:
+                 calibration_data = cache_entry
+ 
+-            q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(
+-                original_tensor, key=key, depth=depth, calibration_data=calibration_data, has_bias=has_bias
+-            )
++            try:
++                q_tensor, dequant_s, dequant_w, extra_tensors = converter.convert(
++                    original_tensor, key=key, depth=depth, calibration_data=calibration_data, has_bias=has_bias
++                )
++            except ValueError as _e:
++                if "divisible by convrot_group_size" in str(_e):
++                    info(f"({i + 1}/{total_weights}) Keeping high precision (INT4 ConvRot incompatible): {key}")
++                    new_tensors[key] = original_tensor.to(device="cpu", dtype=original_tensor.dtype)
++                    loader.mark_processed(key)
++                    continue
++                raise
+ 
+             # Cleanup calibration_data immediately if loaded from disk to prevent OOM
+             if calib_data_loaded and calibration_data is not None:
+@@ -606,6 +617,15 @@ def convert_to_fp8_scaled(
                  # Add input_scale only for block-wise INT8 (dynamic quantization for rowwise doesn't use it)
                  if comfy_quant_format == "int8_blockwise":
                      new_tensors[f"{base_name}.input_scale"] = torch.tensor(1.0, dtype=torch.float32, device="cpu")

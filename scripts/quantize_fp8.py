@@ -44,14 +44,13 @@ def should_quantize_fp8(key, tensor):
 
 
 def quantize_ctq(input_file, output_file):
-    """FP8 quantization via convert_to_quant (row-wise scaling + learned rounding)."""
+    """FP8 quantization via convert_to_quant (per-tensor scaling + learned rounding)."""
     from convert_to_quant import quantize
 
-    print("Using convert_to_quant for FP8 (row-wise scaling + learned rounding, comfy_quant)")
+    print("Using convert_to_quant for FP8 (per-tensor scaling + learned rounding, comfy_quant)")
     quantize(
         input=input_file,
         output=output_file,
-        scaling_mode="row",
         comfy_quant=True,
         save_quant_metadata=True,
         low_memory=True,

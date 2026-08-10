@@ -40,11 +40,11 @@ def main():
         print("       Install with: pip install convert-to-quant")
         sys.exit(1)
 
-    print(f"INT8 block-wise quantization with ConvRot learned rounding")
+    print(f"INT8 row-wise quantization with ConvRot learned rounding")
     print(f"Input:  {input_file}")
     print(f"Output: {output_file}")
     print(f"")
-    print(f"NOTE: ConvRot optimization runs per-tensor SVD + gradient descent.")
+    print(f"NOTE: ConvRot (Hadamard rotation) + per-tensor SVD + gradient descent.")
     print(f"      This is slower than naive quantization but produces near-lossless INT8.")
     print(f"")
 
@@ -52,7 +52,9 @@ def main():
         input=input_file,
         output=output_file,
         int8=True,
-        scaling_mode="tensor",
+        scaling_mode="row",
+        convrot=True,
+        dynamic_convrot=True,
         comfy_quant=True,
         save_quant_metadata=True,
         low_memory=True,

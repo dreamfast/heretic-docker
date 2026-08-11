@@ -161,6 +161,16 @@ def load_model(model_id: str, kv_cache_fp8: bool = False):
             model = model.cuda()
 
     model.config.use_cache = False  # disable during calibration to save memory
+
+    # VLMs (Muse Glimmer, etc.) nest attention params in text_config.
+    # compressed-tensors looks for them at the top level — expose them.
+    if hasattr(model.config, "text_config"):
+        tc = model.config.text_config
+        for attr in ("num_attention_heads", "num_key_value_heads", "hidden_size",
+                      "head_dim", "num_hidden_layers"):
+            if hasattr(tc, attr) and not hasattr(model.config, attr):
+                setattr(model.config, attr, getattr(tc, attr))
+
     return model, tokenizer
 
 

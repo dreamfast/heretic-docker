@@ -113,11 +113,12 @@ def load_model(model_id: str, kv_cache_fp8: bool = False):
 
     print(f"Loading model: {model_id}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # trust_remote_code=True for custom architectures (e.g. Muse Glimmer, Glow)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    load_kwargs = {"torch_dtype": "auto"}
+    load_kwargs = {"torch_dtype": "auto", "trust_remote_code": True}
     model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
 
     sequential = should_use_sequential(model)

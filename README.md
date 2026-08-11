@@ -2,7 +2,7 @@
 
 Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration on NVIDIA GPUs.
 
-Produces ComfyUI-compatible text encoder formats (with vision preserved) in five quantization levels — FP8, INT8 (ConvRot), NVFP4, MXFP8 — plus GGUF quants for llama.cpp.
+Produces ComfyUI-compatible text encoder formats (with vision preserved) in five quantization levels — FP8, INT8 (ConvRot), NVFP4, MXFP8 — plus GGUF quants for llama.cpp. Also produces **vLLM-compatible NVFP4 checkpoints** (compressed-tensors format, W4A4).
 
 ## What it does
 
@@ -14,6 +14,7 @@ Produces ComfyUI-compatible text encoder formats (with vision preserved) in five
    - **NVFP4** (4-bit float E2M1, double quantization, Blackwell-optimized)
    - **MXFP8** (Microscaling FP8, OCP MX standard, E8M0 block scales, Blackwell)
 4. **GGUF** conversion with multiple quantization levels via llama.cpp
+5. **NVFP4 for vLLM** — compressed-tensors format W4A4, with optional dynamic mixed-precision (Unsloth-style)
 
 ## Requirements
 
@@ -184,6 +185,53 @@ All stages support **skip-if-exists** caching — re-running the pipeline will s
 ./heretic.sh shell
 ```
 
+## NVFP4 for vLLM
+
+Produces vLLM-compatible NVFP4 checkpoints (compressed-tensors format, W4A4). Pass a HuggingFace model name and it downloads, quantizes, and saves a `vllm serve`-ready directory. **Produce on any GPU (e.g. RTX 4090), serve on Blackwell (RTX 5090, B200) for FP4 tensor-core acceleration.**
+
+```bash
+# Baseline NVFP4 (fastest to produce, good quality)
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B
+
+# Max quality (all rungs — dynamic layer selection, 512 coding-mix samples, FP8 KV cache)
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B \
+    --mixed-precision dynamic --samples 512 --dataset coding-mix --kv-cache-fp8
+```
+
+Output: `/output/nvfp4-vllm/<model>-NVFP4/` — a full HF model directory. Serve with:
+```bash
+vllm serve /output/nvfp4-vllm/Qwen3-8B-NVFP4
+```
+
+### Quality ladder (composable flags)
+
+| Flag | Rung | Effect |
+|------|------|--------|
+| *(default)* | 1 | Uniform NVFP4 W4A4 on all Linear layers |
+| `--mixed-precision downproj` | 2 | Keep `down_proj` in FP8, rest NVFP4 — big quality win, trivial cost |
+| `--mixed-precision dynamic` | 4 | Auto per-layer sensitivity analysis, keep worst layers in FP8 (Unsloth-style) |
+| `--samples 512` | 3 | More calibration samples for stable activation scales |
+| `--dataset coding-mix` | 3 | Coding + tool-calling + chat blend (better for reasoning/code models) |
+| `--kv-cache-fp8` | 5 | Calibrate KV cache to FP8 for 2x longer context |
+| `--dynamic-topk N` | 4 | Dynamic mode: exact number of layers to keep in FP8 (default: ~15%) |
+
+All flags compose freely:
+```bash
+# Balanced (best bang-for-buck)
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision downproj --samples 512 --dataset coding-mix
+
+# Down_proj FP8 + better calibration only
+./heretic.sh nvfp4-vllm Llama-3-8B --mixed-precision downproj --samples 512
+
+# Dynamic sensitivity with top-20 layers in FP8
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision dynamic --dynamic-topk 20
+```
+
+### Hardware notes
+
+- **Produce**: runs on any NVIDIA GPU (calibration is BF16, FP4 packing is uint8). Tested on RTX 4090 (24GB). Models larger than VRAM trigger automatic sequential onloading.
+- **Serve**: requires SM100+ (Blackwell — RTX 5090, B200, DGX Spark) for W4A4 FP4 tensor-core speedup (~2.5x decode). On pre-Blackwell, vLLM falls back to W4A16 (slower).
+
 ## GPU selection
 
 Select a GPU with the `GPU_ID` environment variable:
@@ -219,7 +267,7 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 ```
 .
 ├── heretic.sh              # Helper script (./heretic.sh --help)
-├── Dockerfile              # NGC PyTorch base + heretic + transformers + convert-to-quant + comfy-kitchen
+├── Dockerfile              # NGC PyTorch base + heretic + transformers + convert-to-quant + comfy-kitchen + llm-compressor
 ├── docker-compose.yml      # Single heretic service (GPU, volumes, UID/GID)
 ├── entrypoint.sh           # UID/GID matching via gosu
 ├── .env.example            # HuggingFace token template
@@ -239,6 +287,8 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
     ├── quantize_int8.py            # INT8 block-wise with ConvRot learned rounding (CTQ)
     ├── quantize_nvfp4.py           # NVFP4 E2M1 4-bit (double quantization, comfy_kitchen)
     ├── quantize_mxfp8.py           # MXFP8 microscaling FP8 (CTQ, E8M0 block scales)
+    ├── nvfp4_vllm.py               # NVFP4 W4A4 for vLLM (llm-compressor, compressed-tensors)
+    ├── sensitivity.py              # Per-layer FP4 sensitivity analysis (dynamic mixed-precision)
     ├── convert_gguf.sh             # GGUF conversion + quantization via llama.cpp
     ├── compare_models.py           # Debug utility: compare tensor keys between files
     ├── parse_checkpoint.py         # Parse Optuna checkpoint JSONL for sweep metrics
@@ -251,3 +301,4 @@ Models are downloaded to `./models/` (mounted as `/models` in the container, use
 - [convert-to-quant](https://github.com/silveroxides/convert_to_quant) by silveroxides — INT8 ConvRot, FP8 scaling, MXFP8 quantization
 - [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) by Comfy-Org — NVFP4/MXFP8 CUDA kernels
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF conversion and quantization
+- [llm-compressor](https://github.com/vllm-project/llm-compressor) by vLLM Project — NVFP4 W4A4 quantization for vLLM (compressed-tensors format)

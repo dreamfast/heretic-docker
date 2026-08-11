@@ -10,6 +10,7 @@
 #   ./heretic.sh comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + int4 + nvfp4 + mxfp8)
 #   ./heretic.sh quants <file> <name>           Quantize an existing safetensors into all formats (fp8 + int8 + int4 + nvfp4 + mxfp8)
 #   ./heretic.sh gguf <dir> <name>              GGUF conversion with quantizations
+#   ./heretic.sh nvfp4-vllm <model> [name] [opts]  NVFP4 quant for vLLM (compressed-tensors)
 #   ./heretic.sh merge <base> <adapter> <out>   Merge a LoRA adapter into base model
 #   ./heretic.sh shell                          Open a bash shell in the container
 #   ./heretic.sh run <command...>               Run an arbitrary command in the container
@@ -47,6 +48,7 @@ usage() {
     echo "  comfyui <dir> <name>           ComfyUI formats only (bf16 + fp8 + int8 + int4 + nvfp4 + mxfp8)"
     echo "  quants <file> <name>           Quantize existing safetensors into all formats (fp8 + int8 + int4 + nvfp4 + mxfp8)"
     echo "  gguf <dir> <name>              GGUF conversion with quantizations"
+    echo "  nvfp4-vllm <model> [name] [opts]  NVFP4 quant for vLLM (compressed-tensors)"
     echo "  merge <base> <adapter> <out>   Merge a LoRA adapter into base model"
     echo "  shell                          Open a bash shell in the container"
     echo "  run <command...>               Run an arbitrary command in the container"
@@ -66,6 +68,8 @@ usage() {
     echo "  ./heretic.sh sweep Qwen/Qwen3-4B --runs 20 --trials 100 --quantization BNB_4BIT"
     echo "  ./heretic.sh merge Qwen/Qwen3-4B /output/my-adapter /output/merged"
     echo "  ./heretic.sh convert /output/hf-model my-model"
+    echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B"
+    echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision dynamic --samples 512 --dataset coding-mix"
     echo "  ./heretic.sh shell"
     exit 1
 }
@@ -391,6 +395,27 @@ print(f'{v:.4f}' if v >= 0.001 else f'{v:.6f}')
             exit 1
         fi
         docker compose run --rm heretic bash /scripts/convert_gguf.sh "$(container_path "$1")" "$2"
+        ;;
+
+    nvfp4-vllm)
+        if [ $# -lt 1 ]; then
+            echo "Usage: ./heretic.sh nvfp4-vllm <hf-model-name> [output-name] [options]"
+            echo ""
+            echo "Options:"
+            echo "  --mixed-precision off|downproj|dynamic   Layer selection (default: off)"
+            echo "  --samples N                              Calibration samples (default: 256)"
+            echo "  --dataset ultrachat|coding-mix           Calibration data (default: ultrachat)"
+            echo "  --dynamic-topk N                         Dynamic mode: exact FP8 layer count"
+            echo "  --kv-cache-fp8                           Calibrate KV cache to FP8"
+            echo "  --max-seq-len N                          Max calibration seq length (default: 2048)"
+            echo ""
+            echo "Examples:"
+            echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B"
+            echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision downproj --samples 512"
+            echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision dynamic --dataset coding-mix --kv-cache-fp8"
+            exit 1
+        fi
+        docker compose run --rm heretic python3 /scripts/nvfp4_vllm.py "$@"
         ;;
 
     run)

@@ -51,7 +51,10 @@ RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /llama.cpp &&
     cd /llama.cpp && \
     cmake -B build -DLLAMA_CUDA=OFF -DGGML_CUDA=OFF && \
     cmake --build build --config Release -j$(nproc) --target llama-quantize && \
-    pip install --no-cache-dir -r requirements/requirements-convert_hf_to_gguf.txt && \
+    # Install only the GGUF conversion deps that llama.cpp actually needs.
+    # Do NOT use the requirements file — it pins torch==2.11.0 (CPU) and
+    # transformers==4.57.6, which destroy the NGC torch + heretic's transformers.
+    pip install --no-cache-dir "sentencepiece>=0.1.98,<0.3.0" "protobuf>=4.21.0,<5.0.0" && \
     pip install --no-cache-dir --force-reinstall --no-deps ./gguf-py && \
     rm -rf /llama.cpp/.git /llama.cpp/gguf-py
 
@@ -81,12 +84,26 @@ RUN pip install --no-cache-dir --no-deps convert-to-quant && \
      pip install --no-cache-dir --no-deps comfy-kitchen 2>/dev/null || \
      echo "WARNING: comfy-kitchen not installed, MXFP8/NVFP4 CUDA kernels unavailable")
 
-# Verify CUDA torch survived all pip installs; reinstall from CUDA index if corrupted
-RUN python3 -c "import torch; assert torch.cuda.is_available(), f'torch={torch.__version__}'" || \
-    (echo "ERROR: CUDA torch corrupted, reinstalling..." && \
-     TORCH_VER=$(python3 -c "import torch; print(torch.__version__.split('+')[0])") && \
-     pip install --no-cache-dir --force-reinstall "torch==${TORCH_VER}" \
-       --index-url https://download.pytorch.org/whl/cu130)
+# Install llm-compressor for vLLM NVFP4 quantization (compressed-tensors format).
+# Upgrade transformers 5.6 -> 5.9+ (heretic ~=5.6 allows this; llmcompressor needs >=5.9).
+# All --no-deps on llmcompressor/compressed-tensors to preserve NGC torch.
+RUN pip install --no-cache-dir "transformers>=5.9.0,<=5.10.1" && \
+    pip install --no-cache-dir --no-deps "compressed-tensors==0.17.1" && \
+    pip install --no-cache-dir loguru datasets && \
+    pip install --no-cache-dir --no-deps "llmcompressor==0.12.0.1"
+
+# Re-apply transformers patches that the upgrade above invalidated
+# (hub_kernels stub + tokenizer special_tokens fix)
+COPY patches/patch_hub_kernels.py /tmp/patch_hub_kernels.py
+COPY patches/patch_tokenizer_special_tokens.py /tmp/patch_tokenizer_special_tokens.py
+RUN python3 /tmp/patch_hub_kernels.py && \
+    python3 /tmp/patch_tokenizer_special_tokens.py && \
+    rm /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py
+
+# Verify torch survived all pip installs (no GPU during build, so check for CPU-only
+# build rather than cuda.is_available). The NGC torch (2.11.0a0+nv26.02) reports
+# cuda.is_available()=False without hardware, but is NOT a CPU-only build.
+RUN python3 -c "import torch; v=torch.__version__; assert '+cpu' not in v, f'CPU-only torch detected: {v}'; print(f'torch OK: {v}')"
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

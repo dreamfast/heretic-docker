@@ -30,9 +30,25 @@ if "_KERNELS_STUBBED" in code:
     sys.exit(0)
 
 stub = '''# _KERNELS_STUBBED
-is_kernel = lambda *a, **kw: False
-load_and_register_kernel = lambda *a, **kw: None
-register_kernel = lambda *a, **kw: lambda f: f
+def _noop(*a, **kw): return None
+def _decorator(*a, **kw): return lambda f: f
+def _bool(*a, **kw): return False
+class LayerRepository:
+    def __init__(self, *a, **kw): pass
+is_kernel = _bool
+load_and_register_kernel = _noop
+register_kernel = _decorator
+lazy_load_kernel = _decorator
+get_kernel = lambda *a, **kw: _noop
+use_kernel_forward_from_hub = _decorator
+use_kernel_func_from_hub = _decorator
+replace_kernel_forward_from_hub = _decorator
+register_kernel_mapping = _noop
+register_kernel_mapping_transformers = _noop
+use_kernelized_func = _decorator
+allow_all_hub_kernels = _noop
+def __getattr__(name):
+    return _noop
 '''
 
 if "from kernels import" in code:

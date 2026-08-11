@@ -452,7 +452,7 @@ def main():
     try:
         oneshot(**oneshot_kwargs)
     except (ValueError, RuntimeError) as e:
-        if "SmoothQuant" in str(e) and "mapping" in str(e).lower():
+        if "mapping" in str(e).lower() or "smoothquant" in str(e).lower():
             # SmoothQuant can't resolve per-layer mappings for this architecture.
             # Safe to retry without it — it failed before any weight modification.
             print(f"\nSmoothQuant mapping failed for this architecture, retrying without it...\n")

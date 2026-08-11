@@ -109,7 +109,7 @@ def should_use_sequential(model) -> bool:
 
 def load_model(model_id: str, kv_cache_fp8: bool = False):
     """Load model + tokenizer, with sequential onloading for large models."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer, AutoConfig
 
     print(f"Loading model: {model_id}")
 
@@ -118,8 +118,26 @@ def load_model(model_id: str, kv_cache_fp8: bool = False):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Detect model type and pick the right Auto class
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    model_type = getattr(config, "model_type", "")
+
+    model = None
     load_kwargs = {"torch_dtype": "auto", "trust_remote_code": True}
-    model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+
+    # Try loading based on architecture type
+    for auto_class_name in ["AutoModelForCausalLM", "AutoModelForVision2Seq", "AutoModelForImageTextToText"]:
+        try:
+            auto_class = getattr(__import__("transformers", fromlist=[auto_class_name]), auto_class_name)
+            model = auto_class.from_pretrained(model_id, **load_kwargs)
+            print(f"  Loaded via {auto_class_name}")
+            break
+        except (ValueError, KeyError, ImportError, TypeError) as e:
+            continue
+
+    if model is None:
+        raise ValueError(f"Could not load model '{model_id}' (model_type={model_type}). "
+                         f"Transformers may not support this architecture yet.")
 
     sequential = should_use_sequential(model)
     if sequential:

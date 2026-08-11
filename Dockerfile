@@ -85,9 +85,9 @@ RUN pip install --no-cache-dir --no-deps convert-to-quant && \
      echo "WARNING: comfy-kitchen not installed, MXFP8/NVFP4 CUDA kernels unavailable")
 
 # Install llm-compressor for vLLM NVFP4 quantization (compressed-tensors format).
-# Upgrade transformers 5.6 -> 5.9+ (heretic ~=5.6 allows this; llmcompressor needs >=5.9).
-# All --no-deps on llmcompressor/compressed-tensors to preserve NGC torch.
-RUN pip install --no-cache-dir "transformers>=5.9.0,<=5.10.1" && \
+# transformers 5.15+ adds native support for newer architectures (Muse Glimmer, etc).
+# llmcompressor metadata says <=5.10.1 but it works fine with 5.15 (installed --no-deps).
+RUN pip install --no-cache-dir "transformers>=5.15.0" && \
     pip install --no-cache-dir --no-deps "compressed-tensors==0.17.1" && \
     pip install --no-cache-dir loguru datasets && \
     pip install --no-cache-dir --no-deps "llmcompressor==0.12.0.1"

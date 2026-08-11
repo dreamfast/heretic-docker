@@ -352,7 +352,9 @@ def build_recipe(args, model, calib_data):
     if args.kv_cache_fp8:
         try:
             from compressed_tensors.quantization.quant_scheme import FP8_DYNAMIC
-            kwargs["kv_cache_scheme"] = FP8_DYNAMIC
+            # kv_cache_scheme expects QuantizationArgs (not a full scheme dict).
+            # Use the input_activations args from FP8_DYNAMIC.
+            kwargs["kv_cache_scheme"] = FP8_DYNAMIC["input_activations"]
             print("KV cache: FP8 calibration enabled")
         except Exception:
             print("WARNING: kv_cache_scheme not supported, use --kv-cache-dtype fp8 at serve time")

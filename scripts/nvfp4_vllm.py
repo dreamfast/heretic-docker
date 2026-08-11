@@ -125,14 +125,26 @@ def load_model(model_id: str, kv_cache_fp8: bool = False):
     model = None
     load_kwargs = {"torch_dtype": "auto", "trust_remote_code": True}
 
-    # Try loading based on architecture type
-    for auto_class_name in ["AutoModelForCausalLM", "AutoModelForVision2Seq", "AutoModelForImageTextToText"]:
+    # Build list of candidate Auto classes (import-safe)
+    auto_classes = []
+    try:
+        from transformers import AutoModelForCausalLM
+        auto_classes.append(("AutoModelForCausalLM", AutoModelForCausalLM))
+    except ImportError:
+        pass
+    try:
+        from transformers import AutoModelForImageTextToText
+        auto_classes.append(("AutoModelForImageTextToText", AutoModelForImageTextToText))
+    except ImportError:
+        pass
+
+    for class_name, auto_class in auto_classes:
         try:
-            auto_class = getattr(__import__("transformers", fromlist=[auto_class_name]), auto_class_name)
             model = auto_class.from_pretrained(model_id, **load_kwargs)
-            print(f"  Loaded via {auto_class_name}")
+            print(f"  Loaded via {class_name}")
             break
-        except (ValueError, KeyError, ImportError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            print(f"  {class_name} failed: {e}")
             continue
 
     if model is None:

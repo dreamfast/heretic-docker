@@ -27,6 +27,8 @@ Examples:
 """
 
 import argparse
+import copy
+import json
 import os
 import sys
 
@@ -91,6 +93,11 @@ For Unsloth-tier quality use:
                         help="Apply SmoothQuant activation smoothing (default: on)")
     parser.add_argument("--smoothquant-strength", type=float, default=0.5,
                         help="SmoothQuant smoothing strength alpha (default: 0.5)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable sensitivity analysis cache (force re-analysis)")
+    parser.add_argument("--recipes", default=None,
+                        help="Comma-separated recipe presets to run in sequence: pure,downproj,dynamic "
+                             "(e.g. --recipes pure,dynamic). Shares model cache + sensitivity cache between runs.")
     args = parser.parse_args()
     # Validate numeric ranges
     if not (0 < args.dampening_frac <= 1):
@@ -294,12 +301,112 @@ def _build_config_groups(args, model, calib_data):
     return groups
 
 
+# ---------------------------------------------------------------------------
+# Sensitivity cache
+# ---------------------------------------------------------------------------
+
+def _sensitivity_cache_path(output_dir, model_id):
+    """Cache file path for sensitivity analysis results."""
+    base = model_id.rstrip("/").split("/")[-1]
+    return os.path.join(output_dir, ".cache", f"{base}-sensitivity.json")
+
+
+def _save_sensitivity(cache_path, errors, selected, args):
+    """Save sensitivity analysis results to JSON cache."""
+    import tempfile
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    data = {
+        "model": args.model,
+        "errors": errors,
+        "selected": selected,
+        "percentile": _SENSITIVITY_PERCENTILE,
+        "topk": args.dynamic_topk,
+        "dataset": args.dataset,
+        "samples": args.samples,
+        "max_seq_len": args.max_seq_len,
+    }
+    # Atomic write + reject NaN/Inf values (poison the cache loudly, not silently)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cache_path), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, allow_nan=False)
+        os.replace(tmp, cache_path)
+    except Exception:
+        os.unlink(tmp)
+        raise
+    print(f"  Sensitivity cached to: {cache_path}")
+
+
+def _load_sensitivity(cache_path, args):
+    """Load cached sensitivity if valid (same model + calibration + selection params)."""
+    if not os.path.exists(cache_path):
+        return None, None
+    try:
+        with open(cache_path) as f:
+            data = json.load(f)
+        # Validate cache key: model + calibration data + selection params must match
+        if data.get("model") != args.model:
+            return None, None
+        if data.get("topk") != args.dynamic_topk:
+            return None, None
+        if data.get("dataset") != args.dataset:
+            return None, None
+        if data.get("samples") != args.samples:
+            return None, None
+        if data.get("max_seq_len") != args.max_seq_len:
+            return None, None
+        errors = data["errors"]
+        selected = data["selected"]
+        # Guard against empty/poisoned cache
+        if not errors or not selected:
+            return None, None
+        return errors, selected
+    except (json.JSONDecodeError, KeyError):
+        return None, None
+
+
+# ---------------------------------------------------------------------------
+# Recipe presets for multi-recipe mode
+# ---------------------------------------------------------------------------
+
+_RECIPE_PRESETS = {
+    "pure":     {"mixed_precision": "off",      "gptq": False, "smoothquant": False, "suffix": "-NVFP4"},
+    "downproj": {"mixed_precision": "downproj", "gptq": True,  "smoothquant": True,  "suffix": "-NVFP4-downproj"},
+    "dynamic":  {"mixed_precision": "dynamic",  "gptq": True,  "smoothquant": True,  "suffix": "-NVFP4-dynamic"},
+}
+
+_SENSITIVITY_PERCENTILE = 0.15
+
+
+def _groups_from_errors(errors, selected):
+    """Build FP8/NVFP4 config_groups from sensitivity errors + selected layers."""
+    from compressed_tensors.quantization.quant_scheme import FP8_DYNAMIC, NVFP4
+    fp8_set = set(selected)
+    all_linear = list(errors.keys())
+    nvfp4_rest = [name for name in all_linear if name not in fp8_set]
+    groups = {
+        "fp8_sensitive": {**FP8_DYNAMIC, "targets": list(selected)},
+        "nvfp4_rest": {**NVFP4, "targets": nvfp4_rest},
+    }
+    print(f"\nMixed precision (dynamic): {len(selected)} layers -> FP8, {len(nvfp4_rest)} -> NVFP4")
+    return groups
+
+
 def _build_dynamic_groups(model, calib_data, args):
     """Rung 4: run sensitivity analysis, build config_groups dynamically."""
     from compressed_tensors.quantization.quant_scheme import FP8_DYNAMIC, NVFP4
     from sensitivity import (
         weight_sensitivity, activation_sensitivity, select_layers, format_report,
     )
+
+    # Check sensitivity cache first
+    cache_path = _sensitivity_cache_path(args.output_dir, args.model)
+    if not args.no_cache:
+        cached_errors, cached_selected = _load_sensitivity(cache_path, args)
+        if cached_errors is not None:
+            print(f"\nLoaded sensitivity analysis from cache ({len(cached_errors)} layers)")
+            print(format_report(cached_errors, cached_selected))
+            return _groups_from_errors(cached_errors, cached_selected)
 
     print("\nRunning NVFP4 sensitivity analysis...")
 
@@ -324,19 +431,14 @@ def _build_dynamic_groups(model, calib_data, args):
         print("  WARNING: sensitivity analysis returned no layers, falling back to downproj heuristic")
         return _downproj_groups()
 
-    selected = select_layers(errors, top_k=args.dynamic_topk, percentile=0.15)
+    selected = select_layers(errors, top_k=args.dynamic_topk, percentile=_SENSITIVITY_PERCENTILE)
     print(format_report(errors, selected))
 
-    fp8_set = set(selected)
-    all_linear = list(errors.keys())
-    nvfp4_rest = [name for name in all_linear if name not in fp8_set]
+    # Cache for future runs
+    if not args.no_cache:
+        _save_sensitivity(cache_path, errors, selected, args)
 
-    groups = {
-        "fp8_sensitive": {**FP8_DYNAMIC, "targets": list(selected)},
-        "nvfp4_rest": {**NVFP4, "targets": nvfp4_rest},
-    }
-    print(f"\nMixed precision (dynamic): {len(selected)} layers -> FP8, {len(nvfp4_rest)} -> NVFP4")
-    return groups
+    return _groups_from_errors(errors, selected)
 
 
 def build_recipe(args, model, calib_data):
@@ -417,6 +519,39 @@ def _build_quant_modifier(args, model, kwargs):
 
 def main():
     args = parse_args()
+
+    if args.recipes:
+        # Multi-recipe mode: run each preset in sequence
+        recipe_names = [r.strip() for r in args.recipes.split(",")]
+        valid = [r for r in recipe_names if r in _RECIPE_PRESETS]
+        invalid = [r for r in recipe_names if r not in _RECIPE_PRESETS]
+        if invalid:
+            print(f"WARNING: Unknown recipes: {invalid}. Valid: {list(_RECIPE_PRESETS.keys())}")
+        if not valid:
+            print("No valid recipes specified.")
+            sys.exit(1)
+
+        base = args.model.rstrip("/").split("/")[-1]
+        for i, name in enumerate(valid):
+            preset = _RECIPE_PRESETS[name]
+            print(f"\n{'#' * 60}")
+            print(f"  Recipe {i+1}/{len(valid)}: {name}")
+            print(f"  mixed-precision={preset['mixed_precision']}, gptq={preset['gptq']}, smoothquant={preset['smoothquant']}")
+            print(f"{'#' * 60}\n")
+
+            recipe_args = copy.copy(args)
+            recipe_args.mixed_precision = preset["mixed_precision"]
+            recipe_args.gptq = preset["gptq"]
+            recipe_args.smoothquant = preset["smoothquant"]
+            recipe_args.output = base + preset["suffix"]
+
+            _run_single_quantization(recipe_args)
+    else:
+        _run_single_quantization(args)
+
+
+def _run_single_quantization(args):
+    """Run a single quantization pass and save the checkpoint. Takes pre-built args namespace."""
 
     out_name = args.output
     if not out_name:

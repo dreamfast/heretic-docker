@@ -413,6 +413,8 @@ print(f'{v:.4f}' if v >= 0.001 else f'{v:.6f}')
             echo "  --actorder static|group|weight           GPTQ activation ordering (default: static)"
             echo "  --smoothquant / --no-smoothquant         SmoothQuant activation smoothing (default: on)"
             echo "  --smoothquant-strength N                 SmoothQuant alpha (default: 0.5)"
+            echo "  --no-cache                               Disable sensitivity cache"
+            echo "  --recipes pure,downproj,dynamic          Run multiple presets in sequence"
             echo ""
             echo "Examples:"
             echo "  ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B"

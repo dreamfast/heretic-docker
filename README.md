@@ -193,9 +193,9 @@ Produces vLLM-compatible NVFP4 checkpoints (compressed-tensors format, W4A4). Pa
 # Baseline NVFP4 (fastest to produce, good quality)
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B
 
-# Max quality (all rungs — dynamic layer selection, 512 coding-mix samples, FP8 KV cache)
+# Max quality (all rungs — GPTQ + SmoothQuant + dynamic + hermes-mix + FP8 KV cache)
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B \
-    --mixed-precision dynamic --samples 512 --dataset coding-mix --kv-cache-fp8
+    --mixed-precision dynamic --samples 512 --dataset hermes-mix --kv-cache-fp8
 ```
 
 Output: `/output/nvfp4-vllm/<model>-NVFP4/` — a full HF model directory. Serve with:
@@ -205,23 +205,29 @@ vllm serve /output/nvfp4-vllm/Qwen3-8B-NVFP4
 
 ### Quality ladder (composable flags)
 
-| Flag | Rung | Effect |
-|------|------|--------|
-| *(default)* | 1 | Uniform NVFP4 W4A4 on all Linear layers |
-| `--mixed-precision downproj` | 2 | Keep `down_proj` in FP8, rest NVFP4 — big quality win, trivial cost |
-| `--mixed-precision dynamic` | 4 | Auto per-layer sensitivity analysis, keep worst layers in FP8 (Unsloth-style) |
-| `--samples 512` | 3 | More calibration samples for stable activation scales |
-| `--dataset coding-mix` | 3 | Coding + tool-calling + chat blend (better for reasoning/code models) |
-| `--kv-cache-fp8` | 5 | Calibrate KV cache to FP8 for 2x longer context |
-| `--dynamic-topk N` | 4 | Dynamic mode: exact number of layers to keep in FP8 (default: ~15%) |
+| Flag | Effect |
+|------|--------|
+| *(default)* | Uniform NVFP4 W4A4 on all Linear layers |
+| `--mixed-precision downproj` | Keep `down_proj` in FP8, rest NVFP4 — big quality win, trivial cost |
+| `--mixed-precision dynamic` | Auto per-layer sensitivity analysis, keep worst layers in FP8 (Unsloth-style) |
+| `--samples 512` | More calibration samples for stable activation scales |
+| `--dataset hermes-mix` | OpenHermes + code + math + tool-calling blend (best for reasoning/code) |
+| `--kv-cache-fp8` | Calibrate KV cache to FP8 for 2x longer context |
+| `--gptq` *(default on)* | Hessian-guided weight quantization — uses calibration data to find optimal weight values (2-5x slower, significantly better quality) |
+| `--smoothquant` *(default on)* | Smooth outlier activation channels before quantization — critical for W4A4 |
+| `--no-gptq` | Disable GPTQ, use round-to-nearest (faster, lower quality) |
+| `--no-smoothquant` | Disable activation smoothing |
 
 All flags compose freely:
 ```bash
 # Balanced (best bang-for-buck)
-./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision downproj --samples 512 --dataset coding-mix
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision downproj --samples 512 --dataset hermes-mix
 
 # Down_proj FP8 + better calibration only
 ./heretic.sh nvfp4-vllm Llama-3-8B --mixed-precision downproj --samples 512
+
+# Fastest (no GPTQ, no SmoothQuant — round-to-nearest)
+./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --no-gptq --no-smoothquant
 
 # Dynamic sensitivity with top-20 layers in FP8
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision dynamic --dynamic-topk 20

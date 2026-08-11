@@ -440,7 +440,7 @@ def main():
     print("\nRunning quantization (oneshot)...\n")
     from llmcompressor import oneshot
 
-    oneshot(
+    oneshot_kwargs = dict(
         model=model,
         processor=tokenizer,  # skip AutoProcessor detection (VLMs without preprocessor_config.json)
         dataset=calib_data,
@@ -448,6 +448,19 @@ def main():
         max_seq_length=args.max_seq_len,
         num_calibration_samples=min(args.samples, len(calib_data)),
     )
+
+    try:
+        oneshot(**oneshot_kwargs)
+    except (ValueError, RuntimeError) as e:
+        if "SmoothQuant" in str(e) and "mapping" in str(e).lower():
+            # SmoothQuant can't resolve per-layer mappings for this architecture.
+            # Safe to retry without it — it failed before any weight modification.
+            print(f"\nSmoothQuant mapping failed for this architecture, retrying without it...\n")
+            recipe = _strip_smoothquant(recipe)
+            oneshot_kwargs["recipe"] = recipe
+            oneshot(**oneshot_kwargs)
+        else:
+            raise
 
     # Post-quantization sanity check
     _sanity_check(model, tokenizer)
@@ -466,6 +479,18 @@ def main():
     print(f"  vllm serve {save_dir}")
     if args.kv_cache_fp8:
         print(f"  vllm serve {save_dir} --kv-cache-dtype fp8")
+
+
+def _strip_smoothquant(recipe):
+    """Remove SmoothQuantModifier from a recipe (list or single modifier)."""
+    if not isinstance(recipe, list):
+        return recipe
+    try:
+        from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
+        filtered = [m for m in recipe if not isinstance(m, SmoothQuantModifier)]
+        return filtered[0] if len(filtered) == 1 else filtered
+    except ImportError:
+        return recipe
 
 
 def _sanity_check(model, tokenizer):

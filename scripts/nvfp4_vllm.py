@@ -442,6 +442,8 @@ def main():
 
     oneshot(
         model=model,
+        tokenizer=tokenizer,
+        processor=tokenizer,  # skip AutoProcessor detection (VLMs without preprocessor_config.json)
         dataset=calib_data,
         recipe=recipe,
         max_seq_length=args.max_seq_len,

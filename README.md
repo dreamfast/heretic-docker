@@ -2,48 +2,57 @@
 
 Docker container for running [Heretic](https://github.com/p-e-w/heretic) LLM abliteration on NVIDIA GPUs.
 
-Produces ComfyUI-compatible text encoder formats (with vision preserved) in five quantization levels — FP8, INT8 (ConvRot), NVFP4, MXFP8 — plus GGUF quants for llama.cpp. Also produces **vLLM-compatible NVFP4 checkpoints** (compressed-tensors format, W4A4).
+Outputs:
+
+- ComfyUI text-encoder formats with vision preserved, in five quantization levels: FP8, INT8, INT4, NVFP4, MXFP8
+- GGUF quants for llama.cpp, imatrix-calibrated, with a separate mmproj vision file for VLMs
+- vLLM-ready NVFP4 checkpoints (compressed-tensors format, W4A4)
 
 ## What it does
 
-1. **Abliterate** any HuggingFace model using Heretic (git master, interactive, you pick the trial)
-2. **Convert** to ComfyUI text encoder format (vision preserved, tokenizer embedded)
+1. **Abliterate** any HuggingFace model with Heretic v2 (interactive, you pick the trial).
+   - v2 defaults to ARA (Arbitrary-Rank Abliteration). Classic directional-ablation abliteration is still available via config, see the [v1 to v2 migration guide](https://github.com/p-e-w/heretic/blob/master/docs/migration_v1_to_v2.md).
+2. **Convert** to ComfyUI text-encoder format. Vision weights and tokenizer are kept.
 3. **Quantize** to five formats:
-   - **FP8** (float8_e4m3fn, per-tensor scaled via convert-to-quant)
-   - **INT8** (block-wise, ConvRot learned rounding — near-lossless, works on any GPU)
-   - **NVFP4** (4-bit float E2M1, double quantization, Blackwell-optimized)
-   - **MXFP8** (Microscaling FP8, OCP MX standard, E8M0 block scales, Blackwell)
-4. **GGUF** conversion with multiple quantization levels via llama.cpp
-5. **NVFP4 for vLLM** — compressed-tensors format W4A4, with optional dynamic mixed-precision (Unsloth-style)
+   - **FP8** (e4m3fn, per-tensor scaled via convert-to-quant)
+   - **INT8** (block-wise, ConvRot learned rounding, near-lossless, any GPU)
+   - **INT4** (W4A4, ConvRot + AdaRound learned rounding, about half the size of INT8)
+   - **NVFP4** (4-bit float E2M1, double quantization, Blackwell)
+   - **MXFP8** (microscaling FP8, OCP MX standard, E8M0 block scales, Blackwell)
+4. **GGUF** conversion with imatrix-calibrated quantization via llama.cpp.
+   - VLMs additionally get an mmproj file so vision keeps working in llama.cpp.
+5. **NVFP4 for vLLM**: compressed-tensors W4A4, with optional dynamic mixed precision (Unsloth-style).
 
 ## Requirements
 
-- NVIDIA GPU with latest drivers
-- Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- HuggingFace account with access to gated models (if targeting gated models)
+- NVIDIA GPU with current drivers
+- Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+- HuggingFace account with access to gated models, if you target gated models
 
 ## Quick start
 
 ```bash
-# Clone and enter the repo
 git clone https://github.com/dreamfast/heretic-docker.git
 cd heretic-docker
 
-# Set up your HuggingFace token
 cp .env.example .env
-# Edit .env and add your HF token
+# edit .env and add your HF token
 
-# Build the container (first time takes a while - NGC base is ~20GB)
-./heretic.sh build
+./heretic.sh build          # first build takes a while, the NGC base is ~20 GB
+```
 
-# Run Heretic abliteration (interactive)
+Run abliteration:
+
+```bash
 ./heretic.sh abliterate google/gemma-3-12b-it
 ```
 
-When Heretic finishes optimization and presents the Pareto menu:
-1. Pick a trial (low refusals + low KL divergence)
-2. Choose "Save the model to a local folder"
-3. Enter `/output/hf-model` as the save path
+When optimization finishes:
+
+1. Pick a trial from the Pareto menu (low refusals, low KL divergence).
+2. Choose "Save the model to a local folder".
+3. Pick an export strategy: merged model, or LoRA adapter only.
+4. Enter `/output/hf-model` as the path.
 
 Then run the conversion pipeline:
 
@@ -53,71 +62,53 @@ Then run the conversion pipeline:
 
 ## Using with any HuggingFace model
 
-Replace the model ID as needed:
+Pass the model ID first, heretic flags after:
 
 ```bash
 ./heretic.sh abliterate meta-llama/Llama-3.1-8B-Instruct
 ./heretic.sh abliterate Qwen/Qwen3.5-9B
-./heretic.sh abliterate mistralai/Mistral-7B-Instruct-v0.3
-```
-
-You can also pass Heretic CLI flags **after** the model name:
-
-```bash
-# Custom trial count
 ./heretic.sh abliterate google/gemma-3-12b-it --n-trials 100
-
-# Use LoRA-based abliteration with 4-bit quantization (for large models)
-./heretic.sh abliterate google/gemma-3-27b-it --quantization BNB_4BIT
+./heretic.sh abliterate google/gemma-3-27b-it --quantization BNB_4BIT   # large models
 ```
-
-**Important:** The model name must come first, flags come after.
 
 ## Automated sweep
 
-Sometimes a single Heretic run doesn't find a good abliteration. The `sweep` command automates running Heretic multiple times with different random seeds and collecting the best LoRA adapters:
+A single run does not always find a good trial. `sweep` runs heretic multiple times with different seeds, exports the top trials headlessly, and ranks the adapters:
 
 ```bash
-# Run 10 sweeps with 200 trials each, collect best adapters
 ./heretic.sh sweep Qwen/Qwen3-4B --runs 10 --trials 200 --batch-size 64
-
-# Fewer trials per run (faster but less thorough)
-./heretic.sh sweep Qwen/Qwen3-4B --runs 20 --trials 50 --batch-size 64
-
-# With quantization for large models
 ./heretic.sh sweep google/gemma-3-27b-it --runs 10 --trials 100 --quantization BNB_4BIT
 ```
 
-Each run uses a unique random seed, so the optimization explores different parameter
-combinations. After all runs complete, you get:
-- A ranked summary table of all adapters (sorted by refusals, then KL divergence)
-- Each adapter named with model, seed, trial number, KL, and refusal count
-- The checkpoint JSONL alongside each adapter for full reproducibility
-- A prompt to merge the best adapter into the base model
+Options:
 
-Output structure:
+- `--runs N`: independent runs (default 10)
+- `--trials N`: trials per run, maps to heretic `--n-trials` (default 200)
+- `--batch-size N`: fixed batch size, skips auto-detection (default 64)
+- `--n-top-trials N`: export top N Pareto trials per run (default 1; extra trials re-export from the finished study)
+- `--keep N`: after the sweep, keep only the best N adapters and delete the rest
+- Any other flags pass through to heretic, e.g. `--quantization BNB_4BIT`
+
+Output:
+
 ```
-output/sweep-20260714-120000/
-  run-0/qwen3-4b-s12345-t78_kl0.0001_r2/
+output/sweep-<timestamp>/
+  <model>-r<run>-s<seed>-t<trial>_kl<kl>_r<refusals>/
     adapter_model.safetensors
     adapter_config.json
-    checkpoint.jsonl        # full Optuna study for reproducibility
-    metrics.json            # trial scores
-  run-1/qwen3-4b-s67890-t45_kl0.0003_r1/
-    ...
-  summary.txt               # ranked table of all adapters
-  merged/                   # (if you chose to merge) full model
+    checkpoint.jsonl      # full Optuna study, for reproducibility
+    metrics.json          # trial scores
+  summary.txt             # ranked table of all adapters
+  merged/                 # only if you merge at the prompt
 ```
 
-Sweep options:
-- `--runs N` — Number of independent runs (default: 10)
-- `--trials N` — Trials per run (default: 200)
-- `--batch-size N` — Fixed batch size, skips auto-detection (default: 64)
-- Extra flags pass through to heretic (e.g. `--quantization BNB_4BIT`)
+- Adapters are ranked by `refusals + KL * 10` (lower is better).
+- After the sweep you are prompted to merge the best adapter into the base model.
+- `./heretic.sh prune <sweep_dir> [--keep N]` deletes all but the best N adapters.
 
 ## Output formats
 
-After running the conversion pipeline, `./output/` contains:
+After `convert`, `./output/` contains:
 
 ### ComfyUI safetensors (with vision)
 
@@ -126,20 +117,23 @@ After running the conversion pipeline, `./output/` contains:
 | `comfyui/<name>.safetensors` | bf16 | ~23 GB | Any | Full precision |
 | `comfyui/<name>_fp8_e4m3fn.safetensors` | FP8 E4M3 | ~12 GB | Ada+ | Per-tensor scaled (convert-to-quant) |
 | `comfyui/<name>_int8.safetensors` | INT8 | ~13 GB | Any | Block-wise with ConvRot learned rounding |
+| `comfyui/<name>_int4.safetensors` | INT4 W4A4 | ~7 GB | Blackwell (MMA) | ConvRot + AdaRound learned rounding, packed 2-per-byte |
 | `comfyui/<name>_nvfp4.safetensors` | NVFP4 E2M1 | ~7.8 GB | Blackwell | 4-bit float, double quantization |
 | `comfyui/<name>_mxfp8.safetensors` | MXFP8 | ~13 GB | Blackwell | Microscaling FP8, E8M0 block scales |
 
-All ComfyUI formats strip the `language_model.*` prefix and embed the tokenizer as a `spiece_model` tensor. Vision weights (`vision_model.*` and `multi_modal_projector.*`) are preserved for I2V prompt enhancement. The vision weights add minimal overhead (~1 GB) and are simply unused during T2V.
+Notes:
+
+- All formats strip the `language_model.*` prefix and embed the tokenizer as a `spiece_model` tensor.
+- Vision weights (`vision_model.*`, `multi_modal_projector.*`) are preserved for I2V prompt enhancement.
+- The vision weights add about 1 GB and are unused during T2V.
 
 ### Format details
 
-**FP8 (E4M3)** — Per-tensor scaled quantization via [convert-to-quant](https://github.com/silveroxides/convert_to_quant). Falls back to naive cast if CTQ is unavailable. Works on Ada (RTX 4090) and newer.
-
-**INT8 (ConvRot)** — Block-wise symmetric INT8 [-127, 127] with [ConvRot](https://github.com/silveroxides/convert_to_quant) learned rounding optimization. For each weight tensor, an SVD-guided gradient descent loop (Prodigy optimizer) learns the optimal rounding direction to minimize output error. This produces near-lossless INT8 quality — significantly better than naive round-to-nearest. Works on any modern GPU (Ampere+). Vision encoder weights are excluded due to non-standard dimensions.
-
-**NVFP4 (E2M1)** — 4-bit floating point with double quantization (per-tensor f32 scale + per-block FP8 e4m3 scale, block size 16). Each quantized weight stores packed FP4 data, block scales, tensor scale, and `comfy_quant` metadata. Pure-PyTorch implementation with optional [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) CUDA acceleration. Requires SM100+ (Blackwell) for native FP4 tensor cores; software dequant works on older GPUs.
-
-**MXFP8** — Microscaling FP8 (OCP MX standard). FP8 E4M3 data with E8M0 (power-of-2 exponent) per-block scales using 32-element blocks. Better dynamic range handling than per-tensor FP8. Requires SM100+ (Blackwell) for hardware-accelerated dequant. Quantized via convert-to-quant.
+- **FP8 (E4M3)**: per-tensor scaled via [convert-to-quant](https://github.com/silveroxides/convert_to_quant). Falls back to a naive cast if CTQ is unavailable. Works on Ada (RTX 4090) and newer.
+- **INT8 (ConvRot)**: block-wise symmetric INT8 [-127, 127] with ConvRot learned rounding. An SVD-guided gradient descent loop (Prodigy optimizer) learns the rounding direction per tensor to minimize output error. Near-lossless, significantly better than round-to-nearest. Works on Ampere and newer. Vision encoder weights are excluded due to non-standard tensor dimensions.
+- **INT4 (W4A4 ConvRot)**: signed INT4 [-7, 7], per-row scaling, packed two per byte. A group-wise Hadamard rotation (ConvRot) spreads outliers so 4-bit stays viable, and the same AdaRound loop as INT8 optimizes rounding (~30 dB vs ~20 dB for round-to-nearest). `--dynamic-convrot` picks a compatible group size per layer. About 50% smaller than INT8. ComfyUI 0.30.0+ accelerates W4A4 matmuls via [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) on Blackwell tensor cores; software dequant works elsewhere.
+- **NVFP4 (E2M1)**: 4-bit float with double quantization (per-tensor f32 scale plus per-block FP8 e4m3 scale, block size 16). Packed FP4 data with `comfy_quant` metadata. Optional comfy-kitchen CUDA acceleration. Needs SM100+ (Blackwell) for FP4 tensor cores; software dequant works on older GPUs.
+- **MXFP8**: FP8 E4M3 data with E8M0 per-block scales, 32-element blocks (OCP MX). Better dynamic range than per-tensor FP8. Needs SM100+ for accelerated dequant. Quantized via convert-to-quant.
 
 ### GGUF (for llama.cpp)
 
@@ -152,9 +146,14 @@ All ComfyUI formats strip the `language_model.*` prefix and embed the tokenizer 
 | Q5_K_S | ~7.7 GB | Slightly smaller Q5 |
 | Q4_K_M | ~6.8 GB | Recommended balance |
 | Q4_K_S | ~6.5 GB | Smaller Q4 variant |
-| Q3_K_M | ~5.6 GB | For low VRAM only |
+| Q3_K_M | ~5.6 GB | Low VRAM only |
 
-GGUF files are text-only (no vision). They work with llama.cpp directly and with ComfyUI via [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF).
+Notes:
+
+- Text GGUFs exclude vision weights. Multimodal models additionally produce `gguf/<name>-mmproj-f16.gguf`, the vision projector. Point llama.cpp at it with `--mmproj`.
+- The mmproj is exported at F16 and never quantized.
+- Calibration data is not included in the repo. Set `CALIBRATION_FILE=<file>` to enable imatrix-calibrated quants; without it the script skips imatrix and produces plain RTN quants. `SKIP_IMATRIX=1` forces the same fallback.
+- GGUFs work with llama.cpp directly and with ComfyUI via [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF).
 
 ### Other outputs
 
@@ -165,40 +164,46 @@ GGUF files are text-only (no vision). They work with llama.cpp directly and with
 
 ## Running individual stages
 
-All stages support **skip-if-exists** caching — re-running the pipeline will skip any format that's already been generated.
+All stages skip-if-exists: re-running the pipeline only builds missing formats.
 
 ```bash
 # Full pipeline (ComfyUI formats + GGUF)
 ./heretic.sh convert /output/hf-model my-model-name
 
-# ComfyUI formats only (bf16 + fp8 + int8 + nvfp4 + mxfp8, no GGUF)
+# ComfyUI formats only (bf16 + fp8 + int8 + int4 + nvfp4 + mxfp8, no GGUF)
 ./heretic.sh comfyui /output/hf-model my-model-name
 
 # GGUF conversion only
 ./heretic.sh gguf /output/hf-model my-model-name
 
-# Run individual quantization scripts
+# Individual quantization scripts
 ./heretic.sh run python3 /scripts/quantize_int8.py /output/comfyui/input.safetensors /output/comfyui/output_int8.safetensors
 ./heretic.sh run python3 /scripts/quantize_mxfp8.py /output/comfyui/input.safetensors /output/comfyui/output_mxfp8.safetensors
 
-# Open a shell for debugging
+# Merge a LoRA adapter into a base model
+./heretic.sh merge Qwen/Qwen3-4B /output/my-adapter /output/merged
+
+# Debug shell
 ./heretic.sh shell
 ```
 
 ## NVFP4 for vLLM
 
-Produces vLLM-compatible NVFP4 checkpoints (compressed-tensors format, W4A4). Pass a HuggingFace model name and it downloads, quantizes, and saves a `vllm serve`-ready directory. **Produce on any GPU (e.g. RTX 4090), serve on Blackwell (RTX 5090, B200) for FP4 tensor-core acceleration.**
+Produces vLLM-compatible NVFP4 checkpoints (compressed-tensors, W4A4). Pass a HuggingFace model name; it downloads, quantizes, and saves a directory ready for `vllm serve`.
+
+- Produce on any GPU (e.g. RTX 4090), serve on Blackwell (RTX 5090, B200) for FP4 tensor-core acceleration.
 
 ```bash
-# Baseline NVFP4 (fastest to produce, good quality)
+# Baseline NVFP4, fastest to produce
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B
 
-# Max quality (all rungs — GPTQ + SmoothQuant + dynamic + hermes-mix + FP8 KV cache)
+# Max quality: GPTQ + SmoothQuant + dynamic mixed precision + hermes-mix + FP8 KV cache
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B \
     --mixed-precision dynamic --samples 512 --dataset hermes-mix --kv-cache-fp8
 ```
 
-Output: `/output/nvfp4-vllm/<model>-NVFP4/` — a full HF model directory. Serve with:
+Output: `/output/nvfp4-vllm/<model>-NVFP4/`, a full HF model directory:
+
 ```bash
 vllm serve /output/nvfp4-vllm/Qwen3-8B-NVFP4
 ```
@@ -208,103 +213,101 @@ vllm serve /output/nvfp4-vllm/Qwen3-8B-NVFP4
 | Flag | Effect |
 |------|--------|
 | *(default)* | Uniform NVFP4 W4A4 on all Linear layers |
-| `--mixed-precision downproj` | Keep `down_proj` in FP8, rest NVFP4 — big quality win, trivial cost |
-| `--mixed-precision dynamic` | Auto per-layer sensitivity analysis, keep worst layers in FP8 (Unsloth-style) |
-| `--samples 512` | More calibration samples for stable activation scales |
-| `--dataset hermes-mix` | OpenHermes + code + math + tool-calling blend (best for reasoning/code) |
-| `--kv-cache-fp8` | Calibrate KV cache to FP8 for 2x longer context |
-| `--gptq` *(default on)* | Hessian-guided weight quantization — uses calibration data to find optimal weight values (2-5x slower, significantly better quality) |
-| `--smoothquant` *(default on)* | Smooth outlier activation channels before quantization — critical for W4A4 |
-| `--no-gptq` | Disable GPTQ, use round-to-nearest (faster, lower quality) |
+| `--mixed-precision downproj` | Keep `down_proj` in FP8, rest NVFP4. Large quality win, small size cost. |
+| `--mixed-precision dynamic` | Per-layer sensitivity analysis keeps the worst layers in FP8 (Unsloth-style) |
+| `--samples 512` | More calibration samples, more stable activation scales |
+| `--dataset hermes-mix` | OpenHermes + code + math + tool-calling blend, best for reasoning and code |
+| `--kv-cache-fp8` | Calibrate KV cache to FP8, roughly 2x longer context |
+| `--gptq` *(default on)* | Hessian-guided weight quantization. 2-5x slower, significantly better quality. |
+| `--smoothquant` *(default on)* | Smooth outlier activation channels. Critical for W4A4. |
+| `--no-gptq` | Round-to-nearest weights instead of GPTQ (faster, lower quality) |
 | `--no-smoothquant` | Disable activation smoothing |
 
-All flags compose freely:
+Flags compose freely:
+
 ```bash
-# Balanced (best bang-for-buck)
+# Balanced
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision downproj --samples 512 --dataset hermes-mix
 
 # Down_proj FP8 + better calibration only
 ./heretic.sh nvfp4-vllm Llama-3-8B --mixed-precision downproj --samples 512
 
-# Fastest (no GPTQ, no SmoothQuant — round-to-nearest)
+# Fastest (round-to-nearest)
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --no-gptq --no-smoothquant
 
-# Dynamic sensitivity with top-20 layers in FP8
+# Dynamic sensitivity, top-20 layers in FP8
 ./heretic.sh nvfp4-vllm Qwen/Qwen3-8B --mixed-precision dynamic --dynamic-topk 20
 ```
 
-### Hardware notes
+Hardware:
 
-- **Produce**: runs on any NVIDIA GPU (calibration is BF16, FP4 packing is uint8). Tested on RTX 4090 (24GB). Models larger than VRAM trigger automatic sequential onloading.
-- **Serve**: requires SM100+ (Blackwell — RTX 5090, B200, DGX Spark) for W4A4 FP4 tensor-core speedup (~2.5x decode). On pre-Blackwell, vLLM falls back to W4A16 (slower).
+- Produce: any NVIDIA GPU. Calibration runs BF16, FP4 packing is uint8. Tested on RTX 4090 (24 GB). Models larger than VRAM trigger automatic sequential onloading.
+- Serve: SM100+ (RTX 5090, B200, DGX Spark) for W4A4 FP4 tensor cores, about 2.5x decode speedup. Pre-Blackwell vLLM falls back to W4A16.
 
 ## GPU selection
 
-Select a GPU with the `GPU_ID` environment variable:
-
 ```bash
-# Use GPU 0 (default)
-./heretic.sh convert /output/hf-model my-model-name
-
-# Use GPU 1
-GPU_ID=1 ./heretic.sh convert /output/hf-model my-model-name
+GPU_ID=1 ./heretic.sh convert /output/hf-model my-model-name   # default is 0
 ```
 
-## INT8 ConvRot notes
+## ConvRot notes (INT8 and INT4)
 
-The INT8 ConvRot stage is significantly slower than other formats because it runs a per-tensor optimization loop (up to 4000 iterations of Prodigy optimizer with SVD projection). For a 12B model with ~500 weight tensors, expect 30-60 minutes on GPU (vs seconds for FP8/MXFP8). Early stopping kicks in automatically when the learning rate bottoms out.
-
-The optimization runs on CUDA when available, falling back to CPU (much slower). Vision encoder weights are excluded from INT8 quantization due to non-standard tensor dimensions.
+- The ConvRot stages run a per-tensor optimization loop (up to 4000 Prodigy iterations with SVD projection), so they are much slower than FP8/MXFP8.
+- A 12B model with ~500 weight tensors takes 30-60 minutes on GPU for INT8. INT4 is similar.
+- Early stopping kicks in when the learning rate bottoms out.
+- Optimization runs on CUDA when available and falls back to CPU (much slower).
+- Vision encoder weights are excluded due to non-standard tensor dimensions.
 
 ## File permissions
 
-The container matches your host user's UID/GID so all output files are owned by you. The `HOST_UID` and `HOST_GID` environment variables are passed automatically.
+- The container runs as your host UID/GID via gosu, so all output files are owned by you.
 
-## How model downloads work
+## Model cache
 
-Models are downloaded to `./models/` (mounted as `/models` in the container, used as `HF_HOME`). This means:
-
-- Models persist between runs (no re-downloading)
-- Models are on your host filesystem, not buried in Docker layers
-- You can pre-download models or share the cache between projects
+- Models download to `./models/` (mounted at `/models`, used as `HF_HOME`).
+- Downloads persist between runs, so nothing is fetched twice.
+- The cache sits on your host filesystem, not in Docker layers. Pre-download or share it between projects if you like.
 
 ## Project structure
 
 ```
 .
 ├── heretic.sh              # Helper script (./heretic.sh --help)
-├── Dockerfile              # NGC PyTorch base + heretic + transformers + convert-to-quant + comfy-kitchen + llm-compressor
+├── Dockerfile              # NGC PyTorch base + heretic v2 + llama.cpp + quantization toolchain
 ├── docker-compose.yml      # Single heretic service (GPU, volumes, UID/GID)
 ├── entrypoint.sh           # UID/GID matching via gosu
 ├── .env.example            # HuggingFace token template
-├── .dockerignore
-├── .gitignore
 ├── patches/
-│   ├── blackwell_compat.py         # bitsandbytes stub for CUDA 13.1
-│   ├── patch_hf_union_types.py     # huggingface_hub PEP 604 union type fix
-│   ├── patch_hub_kernels.py        # transformers hub_kernels stub
-│   └── patch_tokenizer_special_tokens.py
+│   ├── convert_to_quant_int4.patch        # INT4 W4A4 ConvRot for convert-to-quant (PR #55)
+│   ├── patch_hub_kernels.py               # transformers hub_kernels stub
+│   ├── patch_tokenizer_special_tokens.py  # tokenizer extra_special_tokens as list
+│   ├── blackwell_compat.py                # bitsandbytes stub for CUDA 13.1
+│   └── patch_sdpa.py                      # optional Blackwell SDPA fix (disabled)
 └── scripts/
-    ├── convert_all.sh              # Full pipeline (7 stages, skip-if-exists)
-    ├── convert_comfyui.sh          # ComfyUI stages only (6 stages, skip-if-exists)
-    ├── merge_safetensors.py        # Merge shards, keep all keys (vision intact)
+    ├── convert_all.sh              # Full pipeline, skip-if-exists
+    ├── convert_comfyui.sh          # ComfyUI stages only, skip-if-exists
+    ├── convert_gguf.sh             # GGUF + imatrix quants + mmproj for VLMs
+    ├── quantize_all.sh             # Quantize an existing safetensors into all formats
     ├── convert_comfyui_vision.py   # ComfyUI format with vision preserved
+    ├── merge_safetensors.py        # Merge shards, keep all keys (vision intact)
     ├── quantize_fp8.py             # FP8 e4m3fn (CTQ per-tensor scaled, naive fallback)
-    ├── quantize_int8.py            # INT8 block-wise with ConvRot learned rounding (CTQ)
-    ├── quantize_nvfp4.py           # NVFP4 E2M1 4-bit (double quantization, comfy_kitchen)
+    ├── quantize_int8.py            # INT8 block-wise, ConvRot learned rounding
+    ├── quantize_int4.py            # INT4 W4A4, ConvRot + AdaRound learned rounding
+    ├── quantize_nvfp4.py           # NVFP4 E2M1 (double quantization, comfy-kitchen)
     ├── quantize_mxfp8.py           # MXFP8 microscaling FP8 (CTQ, E8M0 block scales)
     ├── nvfp4_vllm.py               # NVFP4 W4A4 for vLLM (llm-compressor, compressed-tensors)
-    ├── sensitivity.py              # Per-layer FP4 sensitivity analysis (dynamic mixed-precision)
-    ├── convert_gguf.sh             # GGUF conversion + quantization via llama.cpp
-    ├── compare_models.py           # Debug utility: compare tensor keys between files
+    ├── sensitivity.py              # Per-layer FP4 sensitivity analysis (dynamic mixed precision)
     ├── parse_checkpoint.py         # Parse Optuna checkpoint JSONL for sweep metrics
-    └── merge_lora.py               # Merge LoRA adapter into base model
+    ├── merge_lora.py               # Merge LoRA adapter into base model
+    ├── average_loras.py            # Average multiple LoRA adapters
+    ├── compare_models.py           # Compare tensor keys between files
+    └── tensor_diff.py              # Numerical diff between safetensors
 ```
 
 ## Credits
 
 - [Heretic](https://github.com/p-e-w/heretic) by Philipp Emanuel Weidmann
-- [convert-to-quant](https://github.com/silveroxides/convert_to_quant) by silveroxides — INT8 ConvRot, FP8 scaling, MXFP8 quantization
-- [comfy_kitchen](https://github.com/Comfy-Org/comfy-kitchen) by Comfy-Org — NVFP4/MXFP8 CUDA kernels
+- [convert-to-quant](https://github.com/silveroxides/convert_to_quant) by silveroxides: INT8/INT4 ConvRot, FP8 scaling, MXFP8
+- [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) by Comfy-Org: NVFP4/MXFP8/INT4 CUDA kernels
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF conversion and quantization
-- [llm-compressor](https://github.com/vllm-project/llm-compressor) by vLLM Project — NVFP4 W4A4 quantization for vLLM (compressed-tensors format)
+- [llm-compressor](https://github.com/vllm-project/llm-compressor) by the vLLM Project: NVFP4 W4A4 for vLLM

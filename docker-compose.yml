@@ -1,4 +1,4 @@
-# Heretic LLM Abliteration Pipeline (master)
+# Heretic LLM Abliteration Pipeline (heretic v2)
 #
 # Usage:
 #   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm heretic heretic google/gemma-3-12b-it
@@ -13,6 +13,8 @@ services:
       - HOST_GID=${HOST_GID:-1000}
       - HF_TOKEN=${HF_TOKEN}
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID:-0}
+      - SKIP_IMATRIX=${SKIP_IMATRIX:-0}
+      - CALIBRATION_FILE=${CALIBRATION_FILE:-/scripts/calibration_data.txt}
     volumes:
       - ./output:/output
       - ./models:/models

@@ -480,7 +480,7 @@ def build_recipe(args, model, calib_data):
 def _try_smoothquant(args):
     """Try to create SmoothQuantModifier. Returns None if unavailable."""
     try:
-        from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
+        from llmcompressor.modifiers.transform.smoothquant import SmoothQuantModifier
         sq = SmoothQuantModifier(smoothing_strength=args.smoothquant_strength)
         print(f"SmoothQuant enabled (strength={args.smoothquant_strength})")
         return sq
@@ -631,7 +631,7 @@ def _strip_smoothquant(recipe):
     if not isinstance(recipe, list):
         return recipe
     try:
-        from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
+        from llmcompressor.modifiers.transform.smoothquant import SmoothQuantModifier
         filtered = [m for m in recipe if not isinstance(m, SmoothQuantModifier)]
         return filtered[0] if len(filtered) == 1 else filtered
     except ImportError:

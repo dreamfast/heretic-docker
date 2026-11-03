@@ -1,5 +1,5 @@
 #!/bin/bash
-# Heretic Docker helper script (master)
+# Heretic Docker helper script (heretic v2)
 # Wraps docker compose commands with UID/GID matching.
 #
 # Usage:
@@ -57,7 +57,7 @@ usage() {
     echo "  --runs N                       Number of independent runs (default: 10)"
     echo "  --trials N                     Trials per run, maps to --n-trials (default: 200)"
     echo "  --batch-size N                 Fixed batch size, skips auto-detection (default: 64)"
-    echo "  --n-top-trials N               Save top N Pareto trials per run (default: 1)"
+    echo "  --n-top-trials N               Save top N Pareto trials per run (default: 1; extra trials re-export from checkpoint)"
     echo "  --keep N                       After sweep, keep only best N adapters, delete rest"
     echo "  Extra flags are passed through to heretic (e.g. --quantization BNB_4BIT)"
     echo ""
@@ -152,6 +152,8 @@ case "$CMD" in
             echo ">>> Run ${RUN_NUM}/${SWEEP_RUNS} (seed=${SEED})"
 
             set +e
+            # heretic v2 native headless mode: optimize all trials, then save
+            # Pareto-optimal trial #0 as a LoRA adapter, non-interactively.
             docker compose run --rm -T heretic heretic \
                 --model "$MODEL" \
                 --seed "$SEED" \
@@ -159,12 +161,33 @@ case "$CMD" in
                 --batch-size "$SWEEP_BATCH" \
                 --study-checkpoint-dir "${CONTAINER_SWEEP}/.ckpt/run-${i}" \
                 --checkpoint-action restart \
-                --n-top-trials "$SWEEP_N_TOP" \
-                --save-directory "${CONTAINER_SWEEP}/.ckpt/run-${i}/adapters" \
+                --trial-index 0 \
+                --model-action save \
                 --export-strategy adapter \
+                --save-directory "${CONTAINER_SWEEP}/.ckpt/run-${i}/adapters/trial_0" \
                 "${HERETIC_FLAGS[@]}"
             RUN_RC=$?
             set -e
+
+            # Additional top-N exports: re-invoke against the finished study.
+            # --checkpoint-action continue resumes with zero remaining trials
+            # (settings are restored from the checkpoint) and --trial-index t
+            # selects the t-th Pareto-optimal trial natively. Each extra export
+            # reloads the model once -- the price of using unpatched upstream.
+            if [ $RUN_RC -eq 0 ] && [ "$SWEEP_N_TOP" -gt 1 ]; then
+                for ((t=1; t<SWEEP_N_TOP; t++)); do
+                    echo ">>> Exporting top trial #${t} of run ${RUN_NUM}..."
+                    docker compose run --rm -T heretic heretic \
+                        --model "$MODEL" \
+                        --study-checkpoint-dir "${CONTAINER_SWEEP}/.ckpt/run-${i}" \
+                        --checkpoint-action continue \
+                        --trial-index "$t" \
+                        --model-action save \
+                        --export-strategy adapter \
+                        --save-directory "${CONTAINER_SWEEP}/.ckpt/run-${i}/adapters/trial_${t}" \
+                        || break
+                done
+            fi
 
             if [ $RUN_RC -ne 0 ]; then
                 echo ">>> Run ${RUN_NUM} exited (code ${RUN_RC}), skipping to next..."
@@ -174,11 +197,7 @@ case "$CMD" in
             CKPT_DIR="${SWEEP_DIR}/.ckpt/run-${i}"
 
             for ((t=0; t<SWEEP_N_TOP; t++)); do
-                if [ "$SWEEP_N_TOP" -eq 1 ]; then
-                    ADAPTER_SRC="${CKPT_DIR}/adapters"
-                else
-                    ADAPTER_SRC="${CKPT_DIR}/adapters/trial_${t}"
-                fi
+                ADAPTER_SRC="${CKPT_DIR}/adapters/trial_${t}"
 
                 if [ ! -d "$ADAPTER_SRC" ]; then
                     break

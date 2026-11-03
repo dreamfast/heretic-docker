@@ -2,22 +2,23 @@
 # NGC PyTorch base provides Blackwell (sm_120) CUDA kernel support.
 # Also works on older GPUs (Ada, Ampere, etc).
 
-FROM nvcr.io/nvidia/pytorch:26.02-py3
+FROM nvcr.io/nvidia/pytorch:26.10-py3
 
 # gosu for UID/GID matching at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Nuke ALL conflicting NGC packages cleanly, then install heretic master.
+# Nuke ALL conflicting NGC packages cleanly, then install heretic (v2).
 # Keep torch + triton + torchvision from NGC (the sm_120 builds we need).
 # torchvision is required by multimodal/VL models (e.g. Qwen3-VL) whose
 # AutoProcessor loads an AutoVideoProcessor; keep the NGC-matched build to
 # avoid a CUDA/version mismatch with the NGC torch.
 #
-# Master branch provides native headless mode (--checkpoint-action, --trial-index,
-# --model-action, --save-directory) which enables automated sweep workflows.
-# heretic master pulls transformers[kernels]~=5.6 and all other deps itself.
+# heretic v2 has native headless operation (--checkpoint-action, --trial-index,
+# --model-action, --save-directory, --export-strategy) which enables automated
+# sweep workflows. heretic v2 pulls transformers[kernels]~=5.18 and all other
+# deps itself.
 RUN pip uninstall -y \
     huggingface-hub transformers tokenizers accelerate safetensors \
     datasets peft kernels 2>/dev/null || true && \
@@ -26,16 +27,19 @@ RUN pip uninstall -y \
     -o -name "accelerate*" -o -name "safetensors*" -o -name "datasets*" \
     -o -name "peft*" -o -name "kernels*" \) | xargs rm -rf && \
     git clone --branch master --depth 1 https://github.com/p-e-w/heretic.git /tmp/heretic && \
-    pip install --no-cache-dir /tmp/heretic hf-transfer && \
+    pip install --no-cache-dir /tmp/heretic && \
     rm -rf /tmp/heretic
 
-# Patch huggingface_hub to handle PEP 604 union types (str | None) used by
-# the kernels package. Without this, the strict dataclass validator crashes.
-# Applied AFTER all pip installs to prevent downgrades from undoing the patch.
-COPY patches/patch_hf_union_types.py /tmp/patch_hf_union_types.py
+# NOTE: huggingface_hub >= 1.33 fixed the PEP 604 union-type validation that
+# patch_hf_union_types.py used to work around -- that patch is no longer needed.
+#
+# Patch transformers:
+# - hub_kernels: kernels package init failures break module import (still needed on 5.22)
+# - tokenizer special tokens: Gemma-4 style extra_special_tokens passed as list
+#   (upstream still dict-only as of transformers 5.22)
+# Applied AFTER all pip installs to prevent downgrades from undoing the patches.
 COPY patches/patch_hub_kernels.py /tmp/patch_hub_kernels.py
 COPY patches/patch_tokenizer_special_tokens.py /tmp/patch_tokenizer_special_tokens.py
-COPY patches/patch_n_top_trials.py /tmp/patch_n_top_trials.py
 
 # SDPA patch disabled -- it breaks heretic abliteration on Qwen3
 # Only needed for Blackwell (5090) GPUs. Re-enable if running on 5090.
@@ -44,25 +48,25 @@ COPY patches/patch_n_top_trials.py /tmp/patch_n_top_trials.py
 #     $(find /usr/local/lib/python3.12/dist-packages -path "*/heretic/model.py" -print -quit) && \
 #     rm /tmp/patch_sdpa.py
 
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
+# huggingface_hub 1.x uses Xet for high-performance transfers (hf-xet is bundled);
+# the old hf-transfer Rust downloader is deprecated.
+ENV HF_XET_HIGH_PERFORMANCE=1
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /llama.cpp && \
     cd /llama.cpp && \
-    cmake -B build -DLLAMA_CUDA=OFF -DGGML_CUDA=OFF && \
-    cmake --build build --config Release -j$(nproc) --target llama-quantize && \
+    cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="89;90;100;120" && \
+    cmake --build build --config Release -j$(nproc) --target llama-quantize llama-imatrix && \
     # Install only the GGUF conversion deps that llama.cpp actually needs.
-    # Do NOT use the requirements file — it pins torch==2.11.0 (CPU) and
+    # Do NOT use the requirements file -- it pins torch==2.11.0 (CPU) and
     # transformers==4.57.6, which destroy the NGC torch + heretic's transformers.
     pip install --no-cache-dir "sentencepiece>=0.1.98,<0.3.0" "protobuf>=4.21.0,<5.0.0" && \
     pip install --no-cache-dir --force-reinstall --no-deps ./gguf-py && \
     rm -rf /llama.cpp/.git /llama.cpp/gguf-py
 
-RUN python3 /tmp/patch_hf_union_types.py && \
-    python3 /tmp/patch_hub_kernels.py && \
+RUN python3 /tmp/patch_hub_kernels.py && \
     python3 /tmp/patch_tokenizer_special_tokens.py && \
-    python3 /tmp/patch_n_top_trials.py && \
-    rm /tmp/patch_hf_union_types.py /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py /tmp/patch_n_top_trials.py
+    rm /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py
 
 # Install quantization toolkit: convert-to-quant (INT4 W4A4 ConvRot, INT8 ConvRot, FP8, MXFP8, NVFP4)
 # and comfy-kitchen (CUDA/Triton kernels for NVFP4/MXFP8 quantization & dequantization)
@@ -85,15 +89,15 @@ RUN pip install --no-cache-dir --no-deps convert-to-quant && \
      echo "WARNING: comfy-kitchen not installed, MXFP8/NVFP4 CUDA kernels unavailable")
 
 # Install llm-compressor for vLLM NVFP4 quantization (compressed-tensors format).
-# transformers 5.15+ adds native support for newer architectures (Muse Glimmer, etc).
-# llmcompressor metadata says <=5.10.1 but it works fine with 5.15 (installed --no-deps).
-RUN pip install --no-cache-dir "transformers>=5.15.0" && \
-    pip install --no-cache-dir --no-deps "compressed-tensors==0.17.1" && \
+# heretic v2 already pulls transformers ~=5.18; this floor ensures we still get
+# the latest (5.22+) for newer architectures (Muse Glimmer, etc).
+RUN pip install --no-cache-dir "transformers>=5.18.0" && \
+    pip install --no-cache-dir --no-deps "compressed-tensors==0.20.1" && \
     pip install --no-cache-dir loguru datasets && \
-    pip install --no-cache-dir --no-deps "llmcompressor==0.12.0.1"
+    pip install --no-cache-dir --no-deps "llmcompressor==0.15.0"
 
-# Re-apply transformers patches that the upgrade above invalidated
-# (hub_kernels stub + tokenizer special_tokens fix)
+# Re-apply the transformers tokenizer special-tokens patch that the upgrade
+# above invalidated (hub_kernels patch is version-tolerant, re-apply anyway)
 COPY patches/patch_hub_kernels.py /tmp/patch_hub_kernels.py
 COPY patches/patch_tokenizer_special_tokens.py /tmp/patch_tokenizer_special_tokens.py
 RUN python3 /tmp/patch_hub_kernels.py && \
@@ -101,8 +105,8 @@ RUN python3 /tmp/patch_hub_kernels.py && \
     rm /tmp/patch_hub_kernels.py /tmp/patch_tokenizer_special_tokens.py
 
 # Verify torch survived all pip installs (no GPU during build, so check for CPU-only
-# build rather than cuda.is_available). The NGC torch (2.11.0a0+nv26.02) reports
-# cuda.is_available()=False without hardware, but is NOT a CPU-only build.
+# build rather than cuda.is_available). The NGC torch reports cuda.is_available()=False
+# without hardware, but is NOT a CPU-only build.
 RUN python3 -c "import torch; v=torch.__version__; assert '+cpu' not in v, f'CPU-only torch detected: {v}'; print(f'torch OK: {v}')"
 
 COPY entrypoint.sh /entrypoint.sh

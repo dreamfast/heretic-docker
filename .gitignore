@@ -17,4 +17,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Calibration data (may contain sensitive prompts)
+scripts/calibration_*.txt
+
+# Local-only Civitai calibration scraper
+scripts/fetch_civitai_prompts.py
+
 .llmdev
